@@ -1,0 +1,50 @@
+"""Settings apply-mode labels for workbench UI."""
+
+from __future__ import annotations
+
+APPLY_IMMEDIATE = "immediate"
+APPLY_NEXT_TURN = "next_turn"
+APPLY_RESTART = "restart"
+
+APPLY_MODE_LABELS: dict[str, str] = {
+    APPLY_IMMEDIATE: "立即生效",
+    APPLY_NEXT_TURN: "下次请求生效",
+    APPLY_RESTART: "需重启服务",
+}
+
+SECTION_APPLY_MODE: dict[str, str] = {
+    "llm": APPLY_NEXT_TURN,
+    "embedding": APPLY_NEXT_TURN,
+    "retrieval": APPLY_NEXT_TURN,
+    "chunk": APPLY_NEXT_TURN,
+    "parsing": APPLY_NEXT_TURN,
+    "app": APPLY_IMMEDIATE,
+    "server": APPLY_RESTART,
+    "proxy": APPLY_IMMEDIATE,
+}
+
+
+def build_settings_effects(patched_sections: list[str]) -> dict:
+    hot_reload: list[str] = []
+    restart_required: list[str] = []
+    for section in patched_sections:
+        mode = SECTION_APPLY_MODE.get(section, APPLY_NEXT_TURN)
+        title = {
+            "llm": "LLM",
+            "embedding": "Embedding",
+            "retrieval": "检索",
+            "chunk": "分块",
+            "parsing": "PDF 解析",
+            "app": "上传限制",
+            "server": "端口",
+            "proxy": "网络代理",
+        }.get(section, section)
+        if mode == APPLY_RESTART:
+            restart_required.append(title)
+        else:
+            hot_reload.append(title)
+    return {
+        "hot_reload": hot_reload,
+        "restart_required": restart_required,
+        "notes": [],
+    }

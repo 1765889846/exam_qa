@@ -1,0 +1,324 @@
+"""入库编排：解析 → 分块 → 向量化 → 写入 storage。"""
+
+import logging
+import re
+from pathlib import Path
+
+from src.config import config
+from src.exceptions import AppException, BadRequestException, ServiceUnavailableException, UnsupportedFormatException
+from src.services.embedding import get_embedding_client
+from src.services.parsing import SUPPORTED_EXTENSIONS, parse_file
+from src.services.storage.vector_store import ChromaVectorStore
+from src.services.storage.doc_store import SQLiteDocStore
+
+logger = logging.getLogger(__name__)
+
+# ponytail: Chroma 单次 upsert 上限经验值，超大文档分批写入
+_UPSERT_BATCH = 128
+
+
+_LATEX_BLOCK = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
+_LATEX_INLINE = re.compile(r"\$([^$]+?)\$")
+
+
+def _protect_latex(text: str) -> tuple[str, dict[str, str]]:
+    """用占位符替换 $$...$$ 和 $...$，防止分块时切断公式。"""
+    placeholders: dict[str, str] = {}
+    counter = [0]
+
+    def _replace_block(m):
+        key = f"__LATEX_{counter[0]}__"
+        placeholders[key] = m.group(0)
+        counter[0] += 1
+        return key
+
+    text = _LATEX_BLOCK.sub(_replace_block, text)
+    text = _LATEX_INLINE.sub(_replace_block, text)
+    return text, placeholders
+
+
+def _restore_latex(chunks: list[str], placeholders: dict[str, str]) -> list[str]:
+    """将占位符还原为原始 LaTeX。"""
+    result = []
+    for chunk in chunks:
+        for key, latex in placeholders.items():
+            chunk = chunk.replace(key, latex)
+        result.append(chunk)
+    return result
+
+
+def _split_text(
+    text: str,
+    chunk_size: int = 500,
+    chunk_overlap: int = 50,
+) -> list[str]:
+    """将长文本按 chunk_size 切分，相邻块有 chunk_overlap 字符重叠。"""
+    if not text or not text.strip():
+        return []
+
+    text, placeholders = _protect_latex(text)
+
+    chunks: list[str] = []
+    paragraphs = re.split(r"\n\s*\n", text)
+
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+
+        if len(para) <= chunk_size:
+            chunks.append(para)
+        else:
+            sentences = re.split(r"(?<=[。！？；\n])", para)
+            current = ""
+            for sent in sentences:
+                if not sent.strip():
+                    continue
+                if len(current) + len(sent) <= chunk_size:
+                    current += sent
+                else:
+                    if current.strip():
+                        chunks.append(current.strip())
+                    if len(sent) > chunk_size:
+                        for i in range(0, len(sent), chunk_size - chunk_overlap):
+                            piece = sent[i : i + chunk_size]
+                            if piece.strip():
+                                chunks.append(piece.strip())
+                        current = ""
+                    else:
+                        current = sent
+            if current.strip():
+                chunks.append(current.strip())
+
+    if chunk_overlap > 0 and len(chunks) > 1:
+        overlapped = [chunks[0]]
+        for i in range(1, len(chunks)):
+            prev = chunks[i - 1]
+            overlap_text = prev[-chunk_overlap:] if len(prev) > chunk_overlap else prev
+            overlapped.append(overlap_text + "\n\n" + chunks[i])
+        chunks = overlapped
+
+    return _restore_latex(chunks, placeholders)
+
+
+def _chunk_document(
+    parsed,
+    *,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> list[tuple[str, int | None]]:
+    """按页/段分块，保留 page 元数据。"""
+    out: list[tuple[str, int | None]] = []
+    for page in parsed.pages:
+        for chunk in _split_text(page.text, chunk_size=chunk_size, chunk_overlap=chunk_overlap):
+            out.append((chunk, page.page))
+    return out
+
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """批量向量化，入库与检索共用。"""
+    try:
+        return get_embedding_client().embed(texts)
+    except Exception as e:
+        logger.error("向量化失败: %s", e)
+        raise ServiceUnavailableException("向量化服务不可用", detail=str(e)) from e
+
+
+def _enrich_chunks_with_context(
+    text: str,
+    chunks: list[str],
+) -> list[str]:
+    """给每个 chunk 前面加上它所属的小节标题，提升语义检索精度。"""
+    if not chunks:
+        return chunks
+
+    header_pattern = re.compile(r"^(#{1,3})\s+(.+)$", re.MULTILINE)
+    headers: list[tuple[int, str, str]] = []
+    for m in header_pattern.finditer(text):
+        headers.append((m.start(), m.group(2).strip(), m.group(1)))
+
+    if not headers:
+        return chunks
+
+    enriched = []
+    for chunk in chunks:
+        try:
+            pos = text.index(chunk[: min(80, len(chunk))])
+        except ValueError:
+            enriched.append(chunk)
+            continue
+
+        context = ""
+        for hpos, title, level in reversed(headers):
+            if hpos <= pos:
+                prefix = "§ " if level == "#" else ("§§ " if level == "##" else "§§§ ")
+                context = f"{prefix}{title}\n"
+                break
+
+        enriched.append(context + chunk if context and not chunk.startswith(context) else chunk)
+
+    return enriched
+
+
+def _acquire_doc_id(
+    ds: SQLiteDocStore,
+    vs: ChromaVectorStore,
+    filepath: Path,
+    filename: str,
+    course: str,
+) -> int:
+    """获取 doc_id：同路径复用记录并清旧向量，避免孤儿 chunk。"""
+    resolved = str(filepath.resolve())
+    existing = ds.find_by_path(resolved)
+    if existing:
+        doc_id = existing["id"]
+        if existing["status"] in ("done", "failed", "processing"):
+            vs.delete_by_doc_id(str(doc_id))
+            ds.update_status(doc_id, "processing", chunk_count=0)
+            logger.info("复用文档记录: doc_id=%s path=%s", doc_id, filename)
+            return doc_id
+
+    doc_id = ds.create(filename=filename, file_path=resolved, course=course)
+    ds.update_status(doc_id, "processing")
+    return doc_id
+
+
+def _fail_ingest(vs: ChromaVectorStore, ds: SQLiteDocStore, doc_id: int) -> None:
+    """入库失败：清向量 + 标记 failed。"""
+    try:
+        vs.delete_by_doc_id(str(doc_id))
+    except Exception as e:
+        logger.warning("清理 doc_id=%s 向量失败: %s", doc_id, e)
+    ds.update_status(doc_id, "failed", chunk_count=0)
+
+
+def _upsert_chunks_batched(
+    vs: ChromaVectorStore,
+    chunk_dicts: list[dict],
+    embeddings: list[list[float]],
+) -> None:
+    for i in range(0, len(chunk_dicts), _UPSERT_BATCH):
+        sl = slice(i, i + _UPSERT_BATCH)
+        vs.upsert(chunk_dicts[sl], embeddings[sl])
+
+
+def _needs_reindex(existing: dict | None, mtime: float) -> bool:
+    """判断文件是否需要（重新）入库。"""
+    if existing is None:
+        return True
+    if existing["status"] != "done":
+        return existing["status"] == "failed"
+    stored = existing.get("file_mtime")
+    if stored is None:
+        return True
+    return mtime > stored + 1e-3
+
+
+def ingest_file(
+    path: str,
+    vs: ChromaVectorStore,
+    ds: SQLiteDocStore,
+    course: str = "信号与系统",
+    display_name: str | None = None,
+) -> str:
+    """入库单文件，返回 doc_id。"""
+    filepath = Path(path)
+    filename = display_name or filepath.name
+    logger.info("开始入库: %s", filename)
+
+    ext = filepath.suffix.lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise UnsupportedFormatException(
+            f"不支持的文件格式: {ext}，仅接受 PDF/TXT/MD/DOC/DOCX/PPTX"
+        )
+
+    doc_id = _acquire_doc_id(ds, vs, filepath, filename, course)
+    logger.info("文档记录就绪: doc_id=%s", doc_id)
+
+    try:
+        parsed = parse_file(path)
+        full_text = parsed.full_text
+        if not full_text.strip():
+            raise BadRequestException("解析后内容为空")
+
+        raw_chunks = _chunk_document(
+            parsed,
+            chunk_size=config.chunk.chunk_size,
+            chunk_overlap=config.chunk.chunk_overlap,
+        )
+        if not raw_chunks:
+            raise BadRequestException("分块结果为空")
+
+        chunk_texts = [c[0] for c in raw_chunks]
+        chunk_pages = [c[1] for c in raw_chunks]
+        chunk_texts = _enrich_chunks_with_context(full_text, chunk_texts)
+        logger.info("分块完成: %s, 共 %d 个 chunk", filename, len(chunk_texts))
+
+        embeddings = embed_texts(chunk_texts)
+
+        chunk_dicts = []
+        for i, chunk_text in enumerate(chunk_texts):
+            chunk_dicts.append({
+                "doc_id": str(doc_id),
+                "source_file": filename,
+                "chunk_index": i,
+                "course": course,
+                "text": chunk_text,
+                "page": chunk_pages[i],
+            })
+
+        _upsert_chunks_batched(vs, chunk_dicts, embeddings)
+        logger.info("向量写入完成: %s, %d chunks", filename, len(chunk_texts))
+
+        ds.update_status(doc_id, "done", chunk_count=len(chunk_texts))
+        ds.update_file_mtime(doc_id, filepath.stat().st_mtime)
+        logger.info("入库完成: %s -> doc_id=%s, %d chunks", filename, doc_id, len(chunk_texts))
+        return str(doc_id)
+
+    except AppException:
+        _fail_ingest(vs, ds, doc_id)
+        raise
+    except Exception as e:
+        logger.exception("入库异常: %s", e)
+        _fail_ingest(vs, ds, doc_id)
+        raise AppException(f"入库失败: {e}", status_code=500)
+
+
+def scan_knowledge_dir(
+    vs: ChromaVectorStore,
+    ds: SQLiteDocStore,
+    *,
+    recover_stale: bool = False,
+) -> None:
+    """扫描 knowledge 目录：新文件入库，mtime 变更的 done 文件重新入库。"""
+    data_dir = Path(config.storage.knowledge_dir)
+    if not data_dir.exists():
+        return
+
+    if recover_stale:
+        stale = ds.recover_stale_processing()
+        if stale:
+            logger.info("已将 %d 条 processing 记录恢复为 failed", stale)
+
+    files = [
+        f for f in data_dir.iterdir()
+        if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
+    ]
+    to_ingest: list[Path] = []
+    for f in files:
+        resolved = str(f.resolve())
+        mtime = f.stat().st_mtime
+        existing = ds.find_by_path(resolved)
+        if _needs_reindex(existing, mtime):
+            to_ingest.append(f)
+
+    if not to_ingest:
+        return
+
+    logger.info("发现 %d 个待入库/更新文件，开始自动导入…", len(to_ingest))
+    for f in to_ingest:
+        try:
+            doc_id = ingest_file(path=str(f.resolve()), vs=vs, ds=ds)
+            logger.info("自动入库: %s -> doc_id=%s", f.name, doc_id)
+        except Exception as e:
+            logger.warning("自动入库失败 %s: %s", f.name, e)

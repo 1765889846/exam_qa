@@ -1,0 +1,40 @@
+[project]
+name = "exam-rag"
+version = "0.1.0"
+description = "RAG 复习助手 — 信号与系统考试资料检索系统"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "chromadb>=0.5",
+    "sentence-transformers>=3.0",
+    "openai>=1.0",
+    "pymupdf>=1.24",
+    "pymupdf4llm>=0.0.17",
+    "python-docx>=1.1",
+    "python-pptx>=1.0",
+    "python-multipart>=0.0.9",
+    "python-dotenv>=1.2.2",
+]
+
+[project.scripts]
+exam = "src.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: 需要 embedding 模型和 LLM API 的集成测试",
+]

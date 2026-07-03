@@ -1,0 +1,11 @@
+{
+  "name": "exam-rag",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter workbench dev",
+    "build": "pnpm --filter workbench build",
+    "lint": "pnpm --filter workbench lint",
+    "typecheck": "pnpm --filter workbench typecheck",
+    "test": "pnpm --filter workbench test"
+  }
+}
