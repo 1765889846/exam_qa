@@ -1,11 +1,7 @@
 <div align="center">
 
-```
-  ┌─────────────────────────────────────────────┐
-  │              e x a m - r a g                │
-  │     本地 RAG 复习助手 · 信号与系统课程      │
-  └─────────────────────────────────────────────┘
-```
+<h1>exam-rag</h1>
+<p><strong>本地 RAG 复习助手 · 信号与系统课程</strong></p>
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -50,9 +46,20 @@ uv run pytest -q              # 单元测试（默认跳过 integration）
 
 ## 架构
 
-<p align="center">
-  <img src="docs/assets/architecture-pipelines.svg" alt="入库与查询两条流水线" width="880"/>
-</p>
+```mermaid
+flowchart TB
+    subgraph ingest["入库"]
+        direction LR
+        I1["上传/扫描"] --> I2["解析"] --> I3["分块"] --> I4["向量化"] --> I5[("Chroma + SQLite")]
+    end
+
+    subgraph query["查询"]
+        direction LR
+        Q1["用户提问"] --> Q2["向量检索"] --> Q3{"score ≥ 阈值?"}
+        Q3 -->|是| Q4["LLM 生成"] --> Q5["答案 + citations"]
+        Q3 -->|否| Q6["拒答 · grounded: false"]
+    end
+```
 
 > [!NOTE]
 > 检索最高分低于 `score_threshold` 时返回 `grounded: false`，固定文案「资料库中未找到相关内容」。
@@ -85,7 +92,7 @@ exam-rag/
 
 </details>
 
-改架构图：`uv run python scripts/gen_arch_svgs.py`，或在 [excalidraw.com](https://excalidraw.com) 编辑 `docs/assets/excalidraw/*.excalidraw`。
+README 用 Mermaid 渲染；Excalidraw 风格 SVG：`uv run python scripts/gen_arch_svgs.py`，或编辑 `docs/assets/excalidraw/*.excalidraw`。
 
 ---
 
