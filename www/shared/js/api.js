@@ -1,0 +1,80 @@
+const BASE = "/api/v1";
+
+async function parse(res) {
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || (body.code != null && body.code >= 400)) {
+    const msg = body.message || res.statusText || "请求失败";
+    throw new Error(msg);
+  }
+  return body.data !== undefined ? body.data : body;
+}
+
+export async function apiGet(path, params) {
+  const url = new URL(BASE + path, window.location.origin);
+  if (params) {
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== "") url.searchParams.set(k, v);
+    });
+  }
+  return parse(await fetch(url));
+}
+
+export async function apiPost(path, json) {
+  return parse(
+    await fetch(BASE + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(json),
+    }),
+  );
+}
+
+export async function apiPatch(path, json) {
+  return parse(
+    await fetch(BASE + path, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(json),
+    }),
+  );
+}
+
+export async function apiDelete(path) {
+  return parse(await fetch(BASE + path, { method: "DELETE" }));
+}
+
+export async function apiUpload(path, formData) {
+  return parse(await fetch(BASE + path, { method: "POST", body: formData }));
+}
+
+/** 消费 ask SSE：onEvent({type, ...}) */
+export async function apiAskStream(body, onEvent, signal) {
+  const res = await fetch(BASE + "/ask", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...body, stream: true }),
+    signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.message || res.statusText);
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const parts = buf.split("\n\n");
+    buf = parts.pop() || "";
+    for (const chunk of parts) {
+      for (const line of chunk.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const raw = line.slice(5).trim();
+        if (!raw) continue;
+        onEvent(JSON.parse(raw));
+      }
+    }
+  }
+}

@@ -1,0 +1,34 @@
+:root {
+  --sz-font: "IBM Plex Sans", "Noto Sans SC", system-ui, sans-serif;
+  --sz-radius-sm: 6px;
+  --sz-radius-md: 8px;
+  --sz-radius-lg: 12px;
+  --sz-accent: #2a9d8f;
+  --sz-success: #2da44e;
+  --sz-danger: #cf222e;
+  --sz-bg-base: #f0f2f4;
+  --sz-bg-panel: #ffffff;
+  --sz-bg-surface: #f5f7f8;
+  --sz-text: #0c1118;
+  --sz-text-muted: #6b7280;
+  --sz-border: #e2e6eb;
+}
+
+:root[data-theme="dark"] {
+  --sz-accent: #4ecdc4;
+  --sz-success: #3fb950;
+  --sz-danger: #f85149;
+  --sz-bg-base: #0c1118;
+  --sz-bg-panel: #151b24;
+  --sz-bg-surface: #121921;
+  --sz-text: #e8eaed;
+  --sz-text-muted: #8b939e;
+  --sz-border: #252b35;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
