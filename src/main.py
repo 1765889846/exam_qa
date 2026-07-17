@@ -16,10 +16,17 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.config import config
-from src.dependencies import get_doc_store, get_llm_client, get_vector_store
+from src.dependencies import get_catalog_store, get_doc_store, get_llm_client, get_vector_store
 from src.exceptions import AppException
 from src.services.embedding import get_embedding_client
 from src.services.env_store import env_was_created
+from src.services.ingestion import scan_knowledge_dir
+from src.services.storage.catalog_store import (
+    DEFAULT_COLLEGE_ID,
+    DEFAULT_COURSE_ID,
+    DEFAULT_COURSE_NAME,
+    LEGACY_COURSE_IDS,
+)
 from src.utils.banner import StartupCheck, log_startup_banner
 from src.utils.logging import get_uvicorn_log_config, setup_logging
 
@@ -27,6 +34,15 @@ logger = logging.getLogger(__name__)
 
 _WEB_ROOT = Path(__file__).resolve().parent.parent
 _WWW_DIR = _WEB_ROOT / "www"
+
+
+def _ui_ready(www_dir: Path | None = None) -> bool:
+    root = www_dir if www_dir is not None else _WWW_DIR
+    return (root / "sz" / "index.html").is_file()
+
+
+def _root_redirect_url(www_dir: Path | None = None) -> str:
+    return "/sz/" if _ui_ready(www_dir) else "/docs"
 
 
 def _attach_file_handler() -> None:
@@ -70,7 +86,23 @@ async def lifespan(app: FastAPI):
     config.validate()
     vs = get_vector_store()
     ds = get_doc_store()
+    catalog = get_catalog_store()
     llm = get_llm_client()
+
+    for old_id in LEGACY_COURSE_IDS:
+        n = vs.rebind_course_id(
+            old_id,
+            DEFAULT_COURSE_ID,
+            course=DEFAULT_COURSE_NAME,
+            college_id=DEFAULT_COLLEGE_ID,
+        )
+        if n:
+            logger.info(
+                "向量 course_id 迁移: %s -> %s (%d chunks)",
+                old_id,
+                DEFAULT_COURSE_ID,
+                n,
+            )
 
     chroma_ok = vs.health_check()
     sqlite_ok = ds.health_check()
@@ -80,10 +112,23 @@ async def lifespan(app: FastAPI):
     app.state.llm_health = "ok" if llm.configured else "unavailable"
     app.state.embedding_health = get_embedding_client().status()
 
+    default_course = catalog.require_course(DEFAULT_COURSE_ID)
+    try:
+        scan_knowledge_dir(
+            vs,
+            ds,
+            course_id=default_course["id"],
+            course=default_course["name"],
+            college_id=default_course["college_id"],
+            recover_stale=True,
+        )
+    except Exception as e:
+        logger.warning("启动扫描 knowledge 失败: %s", e)
+
     if env_was_created():
         logger.info("已从 .env.example 创建 .env，请按需填写 LLM_API_KEY")
 
-    ui_mounted = _WWW_DIR.exists()
+    ui_mounted = _ui_ready()
     storage_root = Path(config.storage.chroma_path).expanduser().parent
 
     checks = [
@@ -106,16 +151,16 @@ async def lifespan(app: FastAPI):
         ),
         StartupCheck(
             "Web UI",
-            "ok" if ui_mounted else "warn",
-            "同端口工作台 · www/" if ui_mounted else "未构建 · pnpm build",
+            "ok",
+            "www/sz/" if ui_mounted else "未挂载（API-only）",
         ),
     ]
 
     log_startup_banner(
-        app_name="exam-rag",
+        app_name="溯知",
         version="0.1.0",
         port=config.port,
-        web_ui=f"http://{config.host}:{config.port}/",
+        web_ui=f"http://{config.host}:{config.port}/sz/",
         web_mounted=ui_mounted,
         api_prefix=config.api_v1_prefix,
         checks=checks,
@@ -126,7 +171,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="RAG 复习助手",
+    title="溯知",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -182,11 +227,18 @@ app.include_router(api_router, prefix=config.api_v1_prefix)
 
 @app.get("/")
 async def root():
-    return RedirectResponse(url="/index.html")
+    return RedirectResponse(url=_root_redirect_url())
 
 
-if _WWW_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(_WWW_DIR), html=True), name="static")
+_sz_dir = _WWW_DIR / "sz"
+if _sz_dir.is_dir():
+    app.mount("/sz", StaticFiles(directory=str(_sz_dir), html=True), name="sz")
+
+_sz_cfg_dir = _WWW_DIR / "sz-cfg"
+if _sz_cfg_dir.is_dir():
+    app.mount(
+        "/sz-cfg", StaticFiles(directory=str(_sz_cfg_dir), html=True), name="sz-cfg"
+    )
 
 
 def _bind_check_host(host: str) -> str:
