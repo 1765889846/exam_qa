@@ -1,4 +1,4 @@
-import { apiGet, apiDelete, apiUpload } from "../../shared/js/api.js";
+import { apiGet, apiDelete, apiUpload, apiAskStream } from "../../shared/js/api.js";
 import { getCourseId, initShell, toast } from "../../shared/js/shell.js";
 
 const ACCEPT = ".pdf,.txt,.md,.doc,.docx,.pptx";
@@ -147,11 +147,111 @@ function bindCourseChange() {
   };
 }
 
+function renderCitations(el, cites) {
+  if (!el) return;
+  if (!cites.length) {
+    el.innerHTML = "";
+    return;
+  }
+  el.innerHTML = cites
+    .map((c, i) => {
+      const score =
+        typeof c.score === "number" ? c.score.toFixed(3) : c.score != null ? String(c.score) : "";
+      const page = c.page != null ? ` p.${c.page}` : "";
+      return `<details class="sz-cite">
+        <summary>[${i + 1}] ${escapeHtml(c.source_file || "")}${page}${score ? ` · ${escapeHtml(score)}` : ""}</summary>
+        <pre>${escapeHtml(c.snippet || "")}</pre>
+      </details>`;
+    })
+    .join("");
+}
+
+function setupAsk() {
+  const streamEl = document.getElementById("sz-ask-stream");
+  const form = document.getElementById("sz-ask-form");
+  const input = document.getElementById("sz-ask-input");
+  if (!streamEl || !form || !input) return;
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const question = input.value.trim();
+    const courseId = getCourseId();
+    if (!question || !courseId) {
+      toast("需要课程与问题", "error");
+      return;
+    }
+
+    let answer = "";
+    streamEl.innerHTML = `<div class="sz-turn">
+      <div class="sz-q"></div>
+      <div class="sz-a-meta"><span class="sz-grounded-badge" id="sz-grounded" hidden></span></div>
+      <div class="sz-a" id="sz-live-a"></div>
+      <div class="sz-cites" id="sz-cites"></div>
+    </div>`;
+    streamEl.querySelector(".sz-q").textContent = question;
+    const live = document.getElementById("sz-live-a");
+    const badge = document.getElementById("sz-grounded");
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+
+    try {
+      await apiAskStream({ question, course_id: courseId, mode: "qa" }, (ev) => {
+        if (ev.type === "phase") {
+          live.dataset.phase = ev.phase || "";
+          if (!answer) {
+            live.textContent =
+              ev.phase === "retrieving" ? "检索中…" : ev.phase === "generating" ? "生成中…" : "";
+          }
+        } else if (ev.type === "delta") {
+          answer += ev.text || "";
+          live.textContent = answer;
+          streamEl.scrollTop = streamEl.scrollHeight;
+        } else if (ev.type === "done") {
+          const d = ev.data || {};
+          live.textContent = d.answer || answer;
+          delete live.dataset.phase;
+          const grounded = !!d.grounded;
+          live.dataset.grounded = String(grounded);
+          if (badge) {
+            badge.hidden = false;
+            badge.textContent = grounded ? "已 grounding" : "未 grounding";
+            badge.dataset.grounded = String(grounded);
+          }
+          renderCitations(document.getElementById("sz-cites"), d.citations || []);
+          if (window.renderMathInElement) {
+            window.renderMathInElement(live, {
+              delimiters: [
+                { left: "$$", right: "$$", display: true },
+                { left: "$", right: "$", display: false },
+              ],
+            });
+          }
+          streamEl.scrollTop = streamEl.scrollHeight;
+        } else if (ev.type === "error") {
+          toast(ev.message || "问答失败", "error");
+        }
+      });
+    } catch (err) {
+      toast(err.message || "问答失败", "error");
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  });
+}
+
 async function main() {
   await initShell({ active: "sz" });
   setupUploadZone();
   setupDocList();
   bindCourseChange();
+  setupAsk();
   await refreshDocs();
 }
 
