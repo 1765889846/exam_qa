@@ -4,7 +4,9 @@
   --sz-radius-md: 8px;
   --sz-radius-lg: 12px;
   --sz-accent: #2a9d8f;
+  --sz-on-accent: #ffffff;
   --sz-success: #2da44e;
+  --sz-warning: #d4a017;
   --sz-danger: #cf222e;
   --sz-bg-base: #f0f2f4;
   --sz-bg-panel: #ffffff;
@@ -16,7 +18,9 @@
 
 :root[data-theme="dark"] {
   --sz-accent: #4ecdc4;
+  --sz-on-accent: #0c1118;
   --sz-success: #3fb950;
+  --sz-warning: #e3b341;
   --sz-danger: #f85149;
   --sz-bg-base: #0c1118;
   --sz-bg-panel: #151b24;

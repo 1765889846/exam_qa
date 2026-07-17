@@ -246,12 +246,19 @@ function setupAsk() {
   });
 }
 
+function showAskEmpty() {
+  const streamEl = document.getElementById("sz-ask-stream");
+  if (!streamEl || streamEl.querySelector(".sz-turn")) return;
+  streamEl.innerHTML = `<p class="sz-ask-empty">选择课程后提问；回答将据资料 grounding</p>`;
+}
+
 async function main() {
   await initShell({ active: "sz" });
   setupUploadZone();
   setupDocList();
   bindCourseChange();
   setupAsk();
+  showAskEmpty();
   await refreshDocs();
 }
 

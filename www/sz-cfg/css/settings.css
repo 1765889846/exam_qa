@@ -205,7 +205,7 @@
 }
 
 .sz-btn-primary {
-  color: #fff;
+  color: var(--sz-on-accent);
   background: var(--sz-accent);
   border-color: var(--sz-accent);
 }

@@ -62,19 +62,28 @@ export async function apiAskStream(body, onEvent, signal) {
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
+
+  function flushChunk(chunk) {
+    for (const line of chunk.split("\n")) {
+      if (!line.startsWith("data:")) continue;
+      const raw = line.slice(5).trim();
+      if (!raw) continue;
+      try {
+        onEvent(JSON.parse(raw));
+      } catch {
+        /* skip malformed SSE payload */
+      }
+    }
+  }
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += dec.decode(value, { stream: true });
     const parts = buf.split("\n\n");
     buf = parts.pop() || "";
-    for (const chunk of parts) {
-      for (const line of chunk.split("\n")) {
-        if (!line.startsWith("data:")) continue;
-        const raw = line.slice(5).trim();
-        if (!raw) continue;
-        onEvent(JSON.parse(raw));
-      }
-    }
+    for (const chunk of parts) flushChunk(chunk);
   }
+  buf += dec.decode();
+  if (buf.trim()) flushChunk(buf);
 }

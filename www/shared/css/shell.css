@@ -83,7 +83,7 @@ body {
 }
 
 .sz-health[data-state="degraded"] {
-  color: #d4a017;
+  color: var(--sz-warning);
 }
 
 .sz-health[data-state="down"] {
@@ -115,16 +115,23 @@ body {
 }
 
 @media (max-width: 768px) {
-  .sz-nav-more {
-    display: none;
-  }
-
   .sz-topbar {
     flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .sz-nav {
+    flex: 1;
   }
 
   .sz-topbar-right {
     margin-left: 0;
     width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .sz-topbar-right select {
+    flex: 1;
+    min-width: 0;
   }
 }

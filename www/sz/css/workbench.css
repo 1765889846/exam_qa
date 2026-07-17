@@ -55,7 +55,7 @@
 
 .sz-upload-btn {
   display: inline-block;
-  color: #fff;
+  color: var(--sz-on-accent);
   background: var(--sz-accent);
   border-color: var(--sz-accent);
 }
@@ -167,12 +167,26 @@
 .sz-grounded-badge[data-grounded="false"] {
   color: var(--sz-danger);
   border-color: var(--sz-danger);
+  background: color-mix(in srgb, var(--sz-danger) 12%, var(--sz-bg-surface));
 }
 
 .sz-a {
   white-space: pre-wrap;
   line-height: 1.55;
   color: var(--sz-text);
+}
+
+.sz-a[data-grounded="false"] {
+  border-left: 3px solid var(--sz-danger);
+  padding-left: 0.65rem;
+  color: var(--sz-text-muted);
+}
+
+.sz-ask-empty {
+  margin: 2rem 1rem;
+  text-align: center;
+  color: var(--sz-text-muted);
+  font-size: 0.95rem;
 }
 
 .sz-ask-composer button:disabled {
@@ -237,7 +251,7 @@
 .sz-ask-composer button {
   font-family: inherit;
   font-size: 0.9rem;
-  color: #fff;
+  color: var(--sz-on-accent);
   background: var(--sz-accent);
   border: none;
   border-radius: var(--sz-radius-md);

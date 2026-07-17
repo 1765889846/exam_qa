@@ -63,10 +63,10 @@ class TestDocumentsAPI:
 
 
 class TestRootRedirect:
-    def test_root_goes_to_docs_without_www(self):
+    def test_root_goes_to_sz_when_ui_present(self):
         r = client.get("/", follow_redirects=False)
         assert r.status_code in (307, 302)
-        assert r.headers["location"].endswith("/docs")
+        assert r.headers["location"].endswith("/sz/")
 
     def test_root_redirect_helpers(self, tmp_path):
         from src.main import _ui_ready, _root_redirect_url
