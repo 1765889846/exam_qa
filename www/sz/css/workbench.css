@@ -13,6 +13,12 @@
   border-right: 1px solid var(--sz-border);
 }
 
+.sz-docs {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .sz-ask {
   border-right: none;
 }
@@ -21,18 +27,105 @@
   flex: 0 0 auto;
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--sz-border);
+  background: var(--sz-bg-surface);
+}
+
+.sz-docs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.sz-upload-btn,
+.sz-docs-upload button,
+.sz-doc-del {
+  font-family: inherit;
+  font-size: 0.875rem;
+  color: var(--sz-text);
+  background: var(--sz-bg-panel);
+  border: 1px solid var(--sz-border);
+  border-radius: var(--sz-radius-sm);
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+}
+
+.sz-upload-btn {
+  display: inline-block;
+  color: #fff;
+  background: var(--sz-accent);
+  border-color: var(--sz-accent);
+}
+
+.sz-upload-btn:hover,
+.sz-docs-upload button:hover {
+  filter: brightness(1.05);
+}
+
+.sz-upload-hint {
+  margin: 0.5rem 0 0;
+}
+
+.sz-muted {
   color: var(--sz-text-muted);
+  font-size: 0.85rem;
 }
 
 .sz-docs-list {
   flex: 1;
-  overflow: auto;
+  overflow-y: auto;
+  min-height: 0;
   padding: 0.75rem 1rem;
+}
+
+.sz-doc-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--sz-border);
+}
+
+.sz-doc-row:last-child {
+  border-bottom: none;
+}
+
+.sz-doc-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.sz-doc-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+}
+
+.sz-doc-status {
+  font-size: 0.75rem;
+  color: var(--sz-text-muted);
+}
+
+.sz-doc-del {
+  flex: 0 0 auto;
+  color: var(--sz-danger);
+  border-color: transparent;
+  background: transparent;
+}
+
+.sz-doc-del:hover {
+  border-color: var(--sz-danger);
+  background: var(--sz-bg-surface);
 }
 
 .sz-ask-stream {
   flex: 1;
   overflow: auto;
+  min-height: 0;
   padding: 1rem;
 }
 
@@ -74,10 +167,16 @@
     grid-template-rows: minmax(200px, 40%) 1fr;
     height: auto;
     min-height: calc(100vh - 3.25rem);
+    overflow: visible;
   }
 
   .sz-docs {
     border-right: none;
     border-bottom: 1px solid var(--sz-border);
+    max-height: 40vh;
+  }
+
+  .sz-docs-list {
+    max-height: none;
   }
 }
