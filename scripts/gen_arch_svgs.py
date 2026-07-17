@@ -143,9 +143,9 @@ def pipelines_svg() -> str:
         x1, x2 = xs[i] + ws[i], xs[i + 1]
         c = YELLOW if i == 3 else PINK
         parts.append(arrow(x1 + 4, 40, x2 - 4, 40, 200 + i, c))
-    steps_query = ["用户提问", "向量检索", "置信度判断", "LLM 生成", "答案 + citations"]
+    steps_query = ["提问+course", "检索 top_k", "阈值过滤", "LLM 生成", "答案 + citations"]
     qxs = [108, 228, 326, 444, 542]
-    qws = [90, 70, 90, 70, 156]
+    qws = [90, 80, 80, 70, 156]
     for i, (sx, sw, name) in enumerate(zip(qxs, qws, steps_query)):
         parts.append(box(sx, 108, sw, 42, 300 + i, name, accent=(i >= 3)))
     for i in range(4):
@@ -167,21 +167,21 @@ def pipelines_svg() -> str:
 
 
 def agent_svg() -> str:
-    parts = [svg_open(720, 350)]
-    parts.append(box(48, 52, 180, 100, 600, "", stroke=INK))
-    parts.append(label(88, 88, "网页端 Agent", color=YELLOW, size=17))
-    parts.append(label(78, 112, "UI (www/)", size=14))
-    parts.append(label(98, 132, "optional", color=PINK, size=14))
-    parts.append(label(108, 158, "交互壳", color=MUTED, size=12))
+    parts = [svg_open(720, 360)]
+    parts.append(box(48, 42, 180, 120, 600, "", stroke=INK))
+    parts.append(label(88, 72, "浏览器 UI", color=YELLOW, size=17))
+    parts.append(label(68, 98, "www/sz · sz-docs · sz-cfg", size=12))
+    parts.append(label(78, 122, "对话 · 资料 · 设置", size=13))
+    parts.append(label(108, 148, "只调 API", color=MUTED, size=12))
     parts.append(arrow(232, 102, 352, 102, 610, YELLOW))
     parts.append(label(262, 88, "HTTP", color=YELLOW, size=13))
     parts.append(label(252, 118, "/api/v1/*", size=12))
     parts.append(box(358, 42, 304, 126, 620, "", stroke=INK))
-    parts.append(label(388, 82, "本地端 Agent", color=YELLOW, size=17))
-    parts.append(label(378, 112, "入库 · 检索 · 生成 · 拒答", size=14))
-    parts.append(label(468, 138, "能力本体", color=MUTED, size=12))
+    parts.append(label(388, 78, "本地 FastAPI", color=YELLOW, size=17))
+    parts.append(label(368, 108, "入库 · 检索 · 生成 · 拒答", size=14))
+    parts.append(label(378, 132, "llm_providers · embedding", size=12))
+    parts.append(label(448, 152, "services/", color=MUTED, size=12))
     parts.append(arrow(508, 172, 508, 248, 630, PINK))
-    # cylinder DB
     parts.append(
         f'<ellipse cx="508" cy="272" rx="118" ry="20" stroke="{INK}" stroke-width="2" fill="none"/>'
     )
@@ -194,25 +194,30 @@ def agent_svg() -> str:
         f'fill="{CYAN}" fill-opacity="0.15"/>'
     )
     parts.append(f'<path d="M390,272 L390,312 M626,272 L626,312" stroke="{INK}" stroke-width="2"/>')
-    parts.append(label(438, 300, "Chroma + SQLite", color=YELLOW, size=16))
-    parts.append(label(48, 330, "网页端只调 API，不 duplicate RAG 逻辑", color=MUTED, size=12))
+    parts.append(label(418, 298, "Chroma + SQLite", color=YELLOW, size=15))
+    parts.append(label(398, 318, "course_id 隔离", color=MUTED, size=11))
+    parts.append(label(48, 340, "UI 不写 RAG；按课程过滤向量与文档", color=MUTED, size=12))
     parts.append(SVG_CLOSE)
     return "".join(parts)
 
 
 def layers_svg() -> str:
-    parts = [svg_open(480, 370)]
-    parts.append(box(72, 36, 336, 64, 700, "", stroke=YELLOW, accent=True))
-    parts.append(label(108, 62, "apis/v1/", color=YELLOW, size=16))
-    parts.append(label(108, 84, "HTTP 出口：路由、参数校验、Depends 注入", size=12))
-    parts.append(arrow(248, 104, 248, 148, 710, PINK))
-    parts.append(box(88, 158, 304, 62, 720, "", stroke=INK))
-    parts.append(label(124, 184, "services/", size=16))
-    parts.append(label(124, 206, "业务编排（不 import FastAPI）", color=MUTED, size=12))
-    parts.append(arrow(248, 224, 248, 268, 730, PINK))
-    parts.append(hachure_rect(64, 278, 352, 64, 740, PINK))
-    parts.append(label(108, 308, "storage/", color=PINK, size=16))
-    parts.append(label(108, 330, "ChromaVectorStore + SQLiteDocStore", size=12))
+    parts = [svg_open(480, 430)]
+    parts.append(box(72, 24, 336, 56, 690, "", stroke=CYAN, accent=False))
+    parts.append(label(108, 48, "www/", color=CYAN, size=16))
+    parts.append(label(108, 68, "sz · sz-docs · sz-cfg", size=12))
+    parts.append(arrow(248, 84, 248, 112, 695, PINK))
+    parts.append(box(72, 118, 336, 64, 700, "", stroke=YELLOW, accent=True))
+    parts.append(label(108, 144, "apis/v1/", color=YELLOW, size=16))
+    parts.append(label(108, 166, "路由 · 校验 · Depends", size=12))
+    parts.append(arrow(248, 186, 248, 220, 710, PINK))
+    parts.append(box(88, 228, 304, 72, 720, "", stroke=INK))
+    parts.append(label(124, 256, "services/", size=16))
+    parts.append(label(104, 280, "ingestion · query · retrieval · llm", color=MUTED, size=11))
+    parts.append(arrow(248, 304, 248, 338, 730, PINK))
+    parts.append(hachure_rect(64, 348, 352, 64, 740, PINK))
+    parts.append(label(108, 378, "storage/", color=PINK, size=16))
+    parts.append(label(88, 400, "Chroma · SQLite · knowledge · providers", size=11))
     parts.append(SVG_CLOSE)
     return "".join(parts)
 
@@ -227,8 +232,8 @@ def flow_svg() -> str:
         parts.append(box(x, 52, w, 38, 800 + i, n, accent=(i == 4)))
     for i in range(4):
         parts.append(arrow(ixs[i] + iws[i] + 2, 72, ixs[i + 1] - 2, 72, 810 + i, YELLOW if i == 3 else PINK))
-    query = ["用户提问", "检索", "置信度", "LLM 生成", "答案 + citations"]
-    qxs, qws = [28, 118, 196, 286, 386], [70, 60, 70, 80, 120]
+    query = ["提问+course", "检索 top_k", "阈值", "LLM 生成", "答案 + citations"]
+    qxs, qws = [28, 118, 206, 286, 386], [70, 70, 60, 80, 120]
     for i, (x, w, n) in enumerate(zip(qxs, qws, query)):
         parts.append(box(x, 216, w, 38, 820 + i, n, accent=(i >= 3)))
     for i in range(4):
@@ -351,17 +356,17 @@ def excal_arrow(x1: float, y1: float, x2: float, y2: float, *, color: str, seed:
 
 def agent_excalidraw() -> dict:
     els = [
-        excal_rect(48, 52, 180, 100, stroke=INK, seed=10),
-        excal_text(88, 82, "网页端 Agent", color=YELLOW, size=20),
-        excal_text(78, 108, "UI → www/ (optional)", color=INK, size=16),
+        excal_rect(48, 42, 180, 120, stroke=INK, seed=10),
+        excal_text(88, 72, "浏览器 UI", color=YELLOW, size=20),
+        excal_text(62, 102, "sz · sz-docs · sz-cfg", color=INK, size=14),
         excal_rect(358, 42, 304, 126, stroke=INK, seed=20),
-        excal_text(388, 72, "本地端 Agent", color=YELLOW, size=20),
-        excal_text(378, 102, "入库 · 检索 · 生成 · 拒答", color=INK, size=16),
+        excal_text(388, 72, "本地 FastAPI", color=YELLOW, size=20),
+        excal_text(368, 102, "入库 · 检索 · 生成 · 拒答", color=INK, size=16),
         excal_arrow(232, 102, 352, 102, color=YELLOW, seed=30),
         excal_text(262, 78, "HTTP /api/v1/*", color=YELLOW, size=14),
         excal_arrow(508, 172, 508, 248, color=PINK, seed=40),
         excal_rect(390, 258, 236, 54, stroke=INK, bg=f"{CYAN}33", seed=50),
-        excal_text(438, 278, "Chroma + SQLite", color=YELLOW, size=18),
+        excal_text(418, 278, "Chroma + SQLite", color=YELLOW, size=18),
     ]
     return {
         "type": "excalidraw",
