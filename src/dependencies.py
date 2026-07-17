@@ -1,4 +1,4 @@
-"""FastAPI Depends 工厂：注入存储、LLM、Embedding 单例。"""
+"""FastAPI Depends 工厂：注入存储、LLM、Embedding、目录单例。"""
 
 from functools import lru_cache
 import logging
@@ -6,6 +6,7 @@ import logging
 from src.config import config
 from src.services.embedding import EmbeddingClient, get_embedding_client as _get_embedding_client
 from src.services.llm import OpenAIClient
+from src.services.storage.catalog_store import CatalogStore
 from src.services.storage.doc_store import SQLiteDocStore
 from src.services.storage.vector_store import ChromaVectorStore
 
@@ -20,6 +21,11 @@ def get_vector_store() -> ChromaVectorStore:
 @lru_cache()
 def get_doc_store() -> SQLiteDocStore:
     return SQLiteDocStore(db_path=config.storage.sqlite_path)
+
+
+@lru_cache()
+def get_catalog_store() -> CatalogStore:
+    return CatalogStore(db_path=config.storage.sqlite_path)
 
 
 @lru_cache()
@@ -45,6 +51,7 @@ def reload_services() -> None:
 
     get_vector_store.cache_clear()
     get_doc_store.cache_clear()
+    get_catalog_store.cache_clear()
     get_llm_client.cache_clear()
     reset_embedding_client()
 

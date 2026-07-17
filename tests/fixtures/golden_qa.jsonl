@@ -1,4 +1,5 @@
-{"question": "傅里叶变换的定义是什么", "expected_contains": ["傅里叶"], "mode": "qa"}
-{"question": "什么是卷积定理", "expected_contains": ["卷积", "频域"], "mode": "qa"}
-{"question": "采样定理的内容", "expected_contains": ["采样", "频率"], "mode": "qa"}
-{"question": "What is the capital of France", "expected_contains": ["未找到"], "mode": "qa", "expect_refusal": true}
+{"question": "傅里叶变换的定义是什么", "course_id": "course-default", "expected_contains": ["傅里叶"], "mode": "qa"}
+{"question": "什么是卷积定理", "course_id": "course-default", "expected_contains": ["卷积", "频域"], "mode": "qa"}
+{"question": "采样定理的内容", "course_id": "course-default", "expected_contains": ["采样", "频率"], "mode": "qa"}
+{"question": "What is the capital of France", "course_id": "course-default", "expected_contains": ["未找到"], "mode": "qa", "expect_refusal": true}
+{"question": "傅里叶变换的时移性质", "course_id": "course-ideology-2025", "mode": "qa", "expect_refusal": true, "note": "负例：他课 course_id 不得命中默认课资料"}

@@ -83,6 +83,7 @@ class OpenAIEmbeddingClient:
                 api_key=api_key,
                 base_url=base_url,
                 timeout=timeout,
+                max_retries=1,
                 http_client=create_openai_http_client(timeout),
             )
             logger.info("Embedding API 已配置: %s @ %s", model, base_url)
@@ -140,4 +141,7 @@ def get_embedding_client() -> EmbeddingClient:
 
 
 def reset_embedding_client() -> None:
+    from src.services.retrieval import clear_query_embed_cache
+
     get_embedding_client.cache_clear()
+    clear_query_embed_cache()

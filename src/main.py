@@ -51,6 +51,7 @@ def _attach_file_handler() -> None:
     handler = RotatingFileHandler(
         log_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
     )
+    handler.setLevel(getattr(logging, config.log_level, logging.INFO))
     handler.setFormatter(
         logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     )
@@ -80,10 +81,13 @@ def _embedding_check() -> StartupCheck:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     started = time.perf_counter()
-    setup_logging(debug=config.debug)
+    setup_logging(level=config.log_level)
     _attach_file_handler()
 
     config.validate()
+    from src.services.llm_providers import ensure_seeded_from_env
+
+    ensure_seeded_from_env()
     vs = get_vector_store()
     ds = get_doc_store()
     catalog = get_catalog_store()
@@ -239,6 +243,12 @@ _sz_dir = _WWW_DIR / "sz"
 if (_sz_dir / "index.html").is_file():
     app.mount("/sz", StaticFiles(directory=str(_sz_dir), html=True), name="sz")
 
+_sz_docs_dir = _WWW_DIR / "sz-docs"
+if (_sz_docs_dir / "index.html").is_file():
+    app.mount(
+        "/sz-docs", StaticFiles(directory=str(_sz_docs_dir), html=True), name="sz-docs"
+    )
+
 _sz_cfg_dir = _WWW_DIR / "sz-cfg"
 if (_sz_cfg_dir / "index.html").is_file():
     app.mount(
@@ -269,7 +279,7 @@ def main() -> None:
 
     import uvicorn
 
-    setup_logging(debug=config.debug)
+    setup_logging(level=config.log_level)
     _attach_file_handler()
 
     host = config.host
@@ -290,7 +300,7 @@ def main() -> None:
         host=host,
         port=port,
         reload=use_reload,
-        log_config=get_uvicorn_log_config(debug=config.debug),
+        log_config=get_uvicorn_log_config(level=config.log_level),
         timeout_graceful_shutdown=5,
     )
     server = uvicorn.Server(uvi_config)

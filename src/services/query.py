@@ -20,22 +20,29 @@ def ask(
     mode: str,
     vs: ChromaVectorStore,
     llm: OpenAIClient,
+    course_id: str,
 ) -> AnswerData:
-    """根据 mode 执行检索 + 后处理 + 生成，返回 AnswerData。"""
+    """检索 + 生成；caller 须保证 course_id 有效。"""
     if mode not in P0_MODES:
         raise BadRequestException(f"P0 仅支持 mode=qa，收到 mode={mode}")
+    if not course_id or not course_id.strip():
+        raise BadRequestException("course_id 不能为空")
 
-    logger.info("查询开始: mode=%s question='%s...'", mode, question[:60])
+    logger.info(
+        "查询开始: course_id=%s mode=%s question='%s...'",
+        course_id,
+        mode,
+        question[:60],
+    )
 
-    hits = retrieve(query=question, vs=vs, top_k=config.retrieval.top_k)
+    hits = retrieve(
+        query=question,
+        vs=vs,
+        course_id=course_id,
+    )
 
-    if not hits or hits[0]["score"] < config.retrieval.score_threshold:
-        logger.info(
-            "检索拒答: hits=%d max_score=%.4f threshold=%.4f",
-            len(hits),
-            hits[0]["score"] if hits else 0,
-            config.retrieval.score_threshold,
-        )
+    if not hits:
+        logger.info("检索拒答: 无过阈命中 threshold=%.4f", config.retrieval.score_threshold)
         return AnswerData(
             answer="资料库中未找到相关内容",
             citations=[],
@@ -69,21 +76,31 @@ def ask_stream(
     mode: str,
     vs: ChromaVectorStore,
     llm: OpenAIClient,
+    course_id: str,
 ):
-    """流式问答：yield SSE 事件 dict（type: phase | delta | done | error）。"""
+    """流式问答：yield SSE 事件 dict。"""
     if mode not in P0_MODES:
         raise BadRequestException(f"P0 仅支持 mode=qa，收到 mode={mode}")
+    if not course_id or not course_id.strip():
+        raise BadRequestException("course_id 不能为空")
 
-    logger.info("流式查询开始: mode=%s question='%s...'", mode, question[:60])
+    logger.info(
+        "流式查询开始: course_id=%s mode=%s question='%s...'",
+        course_id,
+        mode,
+        question[:60],
+    )
     yield {"type": "phase", "phase": "retrieving"}
 
-    hits = retrieve(query=question, vs=vs, top_k=config.retrieval.top_k)
+    hits = retrieve(
+        query=question,
+        vs=vs,
+        course_id=course_id,
+    )
 
-    if not hits or hits[0]["score"] < config.retrieval.score_threshold:
+    if not hits:
         logger.info(
-            "检索拒答(流式): hits=%d max_score=%.4f threshold=%.4f",
-            len(hits),
-            hits[0]["score"] if hits else 0,
+            "检索拒答(流式): 无过阈命中 threshold=%.4f",
             config.retrieval.score_threshold,
         )
         yield {

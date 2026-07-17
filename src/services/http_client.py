@@ -21,9 +21,10 @@ _PROXY_ENV_KEYS = (
 def apply_proxy_env(proxy: ProxyConfig | None = None) -> None:
     """将代理写入进程环境，供 httpx / Hugging Face 等库使用。"""
     p = proxy if proxy is not None else config.proxy
-    if p.url:
+    active = p.active_url
+    if active:
         for key in _PROXY_ENV_KEYS:
-            os.environ[key] = p.url
+            os.environ[key] = active
     else:
         for key in _PROXY_ENV_KEYS:
             os.environ.pop(key, None)
@@ -33,6 +34,5 @@ def apply_proxy_env(proxy: ProxyConfig | None = None) -> None:
 
 
 def create_openai_http_client(timeout: float) -> httpx.Client:
-    """OpenAI SDK 用 httpx 客户端（显式代理 + trust_env 读 NO_PROXY）。"""
-    proxy = config.proxy.url or None
-    return httpx.Client(proxy=proxy, timeout=timeout, trust_env=True)
+    proxy = config.proxy.active_url or None
+    return httpx.Client(proxy=proxy, timeout=timeout, trust_env=False)

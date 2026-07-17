@@ -40,9 +40,19 @@ class TestCatalogAPI:
 
 
 class TestDocumentsAPI:
-    def test_scan_requires_course_id(self):
-        r = client.post("/api/v1/documents/scan")
+    def test_list_requires_course_id(self):
+        r = client.get("/api/v1/documents")
         assert r.status_code == 422
+
+    def test_list_ok_with_course_id(self):
+        r = client.get(
+            "/api/v1/documents",
+            params={"course_id": "course-default"},
+        )
+        assert r.status_code == 200
+        data = r.json()["data"]
+        assert "items" in data
+        assert "embedding" in data
 
     def test_scan_response_shape(self):
         r = client.post(
@@ -68,11 +78,16 @@ class TestRootRedirect:
         assert r.status_code in (307, 302)
         assert r.headers["location"].endswith("/sz/")
 
-    def test_root_redirect_helpers(self, tmp_path):
+    def test_root_redirect_helpers(self):
+        import tempfile
+        from pathlib import Path
+
         from src.main import _ui_ready, _root_redirect_url
 
-        assert _root_redirect_url(tmp_path) == "/docs"
-        (tmp_path / "sz").mkdir()
-        (tmp_path / "sz" / "index.html").write_text("x", encoding="utf-8")
-        assert _ui_ready(tmp_path) is True
-        assert _root_redirect_url(tmp_path) == "/sz/"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            assert _root_redirect_url(base) == "/docs"
+            (base / "sz").mkdir()
+            (base / "sz" / "index.html").write_text("x", encoding="utf-8")
+            assert _ui_ready(base) is True
+            assert _root_redirect_url(base) == "/sz/"

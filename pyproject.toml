@@ -1,7 +1,7 @@
 [project]
 name = "exam-rag"
 version = "0.1.0"
-description = "RAG 复习助手 — 信号与系统考试资料检索系统"
+description = "溯知（exam-rag）— 据源而答的课程资料问答"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",

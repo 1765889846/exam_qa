@@ -49,7 +49,7 @@ def log_startup_banner(
     border = "─" * 44
     stream.write("\n")
     stream.write(f"  {dim}┌{border}┐{reset}\n")
-    stream.write(f"  {dim}│{reset}  {title}  {dim}·  本地 RAG 复习助手 v{version}{reset}\n")
+    stream.write(f"  {dim}│{reset}  {title}  {dim}·  据源而答 v{version}{reset}\n")
     stream.write(f"  {dim}└{border}┘{reset}\n\n")
 
     stream.write(f"  {dim}组件{reset}\n")
@@ -62,12 +62,9 @@ def log_startup_banner(
 
     stream.write(f"\n  {dim}访问{reset}\n")
     if web_mounted:
-        stream.write(f"  {GREEN if c else ''}→ 工作台{reset}   {web_ui}\n")
+        stream.write(f"  {GREEN if c else ''}→ UI{reset}       {web_ui}\n")
     else:
-        stream.write(
-            f"  {GREEN if c else ''}→ 工作台{reset}   http://127.0.0.1:{port}/"
-            f"  {dim}(pnpm install && pnpm build 后重启){reset}\n",
-        )
+        stream.write(f"  {dim}→ UI        未挂载（API-only）{reset}\n")
     stream.write(
         f"  {GREEN if c else ''}→ API{reset}      http://127.0.0.1:{port}{api_prefix}\n",
     )

@@ -170,8 +170,8 @@ def agent_svg() -> str:
     parts = [svg_open(720, 350)]
     parts.append(box(48, 52, 180, 100, 600, "", stroke=INK))
     parts.append(label(88, 88, "网页端 Agent", color=YELLOW, size=17))
-    parts.append(label(78, 112, "workbench/", size=14))
-    parts.append(label(98, 132, "→ www/", color=PINK, size=14))
+    parts.append(label(78, 112, "UI (www/)", size=14))
+    parts.append(label(98, 132, "optional", color=PINK, size=14))
     parts.append(label(108, 158, "交互壳", color=MUTED, size=12))
     parts.append(arrow(232, 102, 352, 102, 610, YELLOW))
     parts.append(label(262, 88, "HTTP", color=YELLOW, size=13))
@@ -353,7 +353,7 @@ def agent_excalidraw() -> dict:
     els = [
         excal_rect(48, 52, 180, 100, stroke=INK, seed=10),
         excal_text(88, 82, "网页端 Agent", color=YELLOW, size=20),
-        excal_text(78, 108, "workbench/ → www/", color=INK, size=16),
+        excal_text(78, 108, "UI → www/ (optional)", color=INK, size=16),
         excal_rect(358, 42, 304, 126, stroke=INK, seed=20),
         excal_text(388, 72, "本地端 Agent", color=YELLOW, size=20),
         excal_text(378, 102, "入库 · 检索 · 生成 · 拒答", color=INK, size=16),

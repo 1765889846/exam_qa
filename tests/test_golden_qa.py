@@ -1,6 +1,7 @@
 """冒烟回归测试：golden_qa.jsonl。
 
 验证核心问答链路不退化。先入库测试数据，再逐条验证 golden QA。
+负例 course_id 用于跨课隔离（不入库到该课）。
 """
 
 import json
@@ -13,6 +14,11 @@ from src.config import config
 from src.services.ingestion import ingest_file
 from src.services.query import ask as query_ask
 from src.services.llm import OpenAIClient
+from src.services.storage.catalog_store import (
+    DEFAULT_COLLEGE_ID,
+    DEFAULT_COURSE_ID,
+    DEFAULT_COURSE_NAME,
+)
 
 GOLDEN_PATH = Path(__file__).parent / "fixtures" / "golden_qa.jsonl"
 
@@ -28,14 +34,22 @@ def _load_golden_cases():
     return cases
 
 
+class TestGoldenFixture:
+    """不依赖 LLM：fixture 必须带 course_id。"""
+
+    def test_every_case_has_course_id(self):
+        for case in _load_golden_cases():
+            assert case.get("course_id"), f"缺少 course_id: {case}"
+
+
 @pytest.mark.integration
 class TestGoldenQA:
     """Golden QA 冒烟回归。"""
 
     @pytest.fixture(autouse=True)
     def _setup_data(self, vector_store, doc_store):
-        """入库 golden 测试数据。"""
-        content = """# 信号与系统复习资料
+        """入库 golden 测试数据到默认课程。"""
+        content = """# 复习资料样例
 
 ## 傅里叶变换
 
@@ -55,7 +69,7 @@ X(f) = ∫ x(t)e^(-j2πft) dt
 
 ## 卷积定理
 
-卷积定理是信号与系统课程中最重要的定理之一。它揭示了时域运算与频域运算之间的对偶关系：
+卷积定理是复习资料中最重要的定理之一。它揭示了时域运算与频域运算之间的对偶关系：
 
 时域卷积对应频域相乘：
 x(t) * h(t) ↔ X(f) · H(f)
@@ -86,6 +100,9 @@ fs > 2fmax
             path=self._test_file,
             vs=vector_store,
             ds=doc_store,
+            course_id=DEFAULT_COURSE_ID,
+            course=DEFAULT_COURSE_NAME,
+            college_id=DEFAULT_COLLEGE_ID,
         )
 
     @pytest.mark.parametrize("case", _load_golden_cases())
@@ -102,6 +119,7 @@ fs > 2fmax
             mode=case.get("mode", "qa"),
             vs=vector_store,
             llm=llm,
+            course_id=case["course_id"],
         )
 
         if case.get("expect_refusal"):

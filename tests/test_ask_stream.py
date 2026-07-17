@@ -10,6 +10,8 @@ from src.main import app
 
 client = TestClient(app)
 
+_ASK = {"question": "测试", "mode": "qa", "course_id": "course-default", "stream": True}
+
 
 def _mock_hits():
     return [
@@ -24,11 +26,7 @@ def _mock_hits():
 class TestAskStreamAPI:
     def test_stream_refusal_emits_done(self):
         with patch("src.services.query.retrieve", return_value=[]):
-            with client.stream(
-                "POST",
-                "/api/v1/ask",
-                json={"question": "测试", "mode": "qa", "stream": True},
-            ) as resp:
+            with client.stream("POST", "/api/v1/ask", json=_ASK) as resp:
                 assert resp.status_code == 200
                 assert "text/event-stream" in resp.headers.get("content-type", "")
                 body = "".join(resp.iter_text())
@@ -61,11 +59,7 @@ class TestAskStreamAPI:
         try:
             with patch("src.services.query.retrieve", return_value=_mock_hits()):
                 with patch("src.services.query.stream_generate", side_effect=fake_stream):
-                    with client.stream(
-                        "POST",
-                        "/api/v1/ask",
-                        json={"question": "测试", "mode": "qa", "stream": True},
-                    ) as resp:
+                    with client.stream("POST", "/api/v1/ask", json=_ASK) as resp:
                         assert resp.status_code == 200
                         events = []
                         for line in resp.iter_lines():
@@ -84,9 +78,26 @@ class TestAskStreamAPI:
         with patch("src.services.query.retrieve", return_value=[]):
             r = client.post(
                 "/api/v1/ask",
-                json={"question": "测试", "mode": "qa", "stream": False},
+                json={
+                    "question": "测试",
+                    "mode": "qa",
+                    "course_id": "course-default",
+                    "stream": False,
+                },
             )
             assert r.status_code == 200
             body = r.json()
             assert body["code"] == 200
             assert body["data"]["grounded"] is False
+
+    def test_unknown_course_id_404(self):
+        r = client.post(
+            "/api/v1/ask",
+            json={
+                "question": "测试",
+                "mode": "qa",
+                "course_id": "course-nonexistent",
+                "stream": False,
+            },
+        )
+        assert r.status_code == 404

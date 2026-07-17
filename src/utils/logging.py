@@ -89,18 +89,35 @@ def quiet_third_party_loggers() -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
-def setup_logging(*, debug: bool = False) -> None:
-    level = logging.DEBUG if debug else logging.INFO
+def _resolve_level(*, debug: bool = False, level: str | None = None) -> int:
+    if level:
+        return getattr(logging, level.strip().upper(), logging.INFO)
+    return logging.DEBUG if debug else logging.INFO
+
+
+def apply_log_level(level: str) -> None:
+    """热更新根 logger 及已有 handler 级别（不重建 handler）。"""
+    lvl = _resolve_level(level=level)
+    root = logging.getLogger()
+    root.setLevel(lvl)
+    for handler in root.handlers:
+        handler.setLevel(lvl)
+
+
+def setup_logging(*, debug: bool = False, level: str | None = None) -> None:
+    lvl = _resolve_level(debug=debug, level=level)
     handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(lvl)
     handler.setFormatter(ColoredFormatter())
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
-    root.setLevel(level)
+    root.setLevel(lvl)
     quiet_third_party_loggers()
 
 
-def get_uvicorn_log_config(*, debug: bool = False) -> dict[str, Any]:
+def get_uvicorn_log_config(*, debug: bool = False, level: str | None = None) -> dict[str, Any]:
+    lvl_name = (level or ("DEBUG" if debug else "INFO")).strip().upper()
     formatter = {
         "()": "src.utils.logging.ColoredFormatter",
         "fmt": CONSOLE_FMT,
@@ -135,5 +152,6 @@ def get_uvicorn_log_config(*, debug: bool = False) -> dict[str, Any]:
             "uvicorn": {"handlers": ["default"], "level": "WARNING", "propagate": False},
             "uvicorn.error": {"level": "WARNING", "handlers": ["default"], "propagate": False},
             "uvicorn.access": {"handlers": ["access"], "level": "WARNING", "propagate": False},
+            "": {"handlers": ["default"], "level": lvl_name},
         },
     }

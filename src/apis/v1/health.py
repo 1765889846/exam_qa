@@ -22,11 +22,14 @@ async def health_check(
     ds: SQLiteDocStore = Depends(get_doc_store),
     embedding: EmbeddingClient = Depends(get_embedding_client),
 ):
-    """无鉴权健康检查。ponytail: 不做 LLM/Embedding 网络探测，避免阻塞事件循环。"""
+    """无鉴权健康检查。不做 LLM/Embedding 网络探测，避免阻塞事件循环。"""
+    from src.config import config
+
     chroma_ok = vs.health_check()
     sqlite_ok = ds.health_check()
     embedding_status = embedding.status()
-    llm_status = getattr(request.app.state, "llm_health", "unavailable")
+    llm_status = "ok" if config.llm.api_key else "unavailable"
+    request.app.state.llm_health = llm_status
 
     core_ok = chroma_ok and sqlite_ok
     embedding_ok = embedding_status == "ok"

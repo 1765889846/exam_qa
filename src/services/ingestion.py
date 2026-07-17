@@ -8,6 +8,11 @@ from src.config import config
 from src.exceptions import AppException, BadRequestException, ServiceUnavailableException, UnsupportedFormatException
 from src.services.embedding import get_embedding_client
 from src.services.parsing import SUPPORTED_EXTENSIONS, parse_file
+from src.services.storage.catalog_store import (
+    DEFAULT_COLLEGE_ID,
+    DEFAULT_COURSE_ID,
+    DEFAULT_COURSE_NAME,
+)
 from src.services.storage.vector_store import ChromaVectorStore
 from src.services.storage.doc_store import SQLiteDocStore
 
@@ -166,19 +171,30 @@ def _acquire_doc_id(
     filepath: Path,
     filename: str,
     course: str,
+    course_id: str,
 ) -> int:
-    """获取 doc_id：同路径复用记录并清旧向量，避免孤儿 chunk。"""
+    """同路径且同课程复用记录；跨课程占用同路径则拒绝，避免串课。"""
     resolved = str(filepath.resolve())
     existing = ds.find_by_path(resolved)
     if existing:
+        if existing.get("course_id") and existing["course_id"] != course_id:
+            raise BadRequestException(
+                f"文件已归属课程 {existing['course_id']}，不能再入库到 {course_id}"
+            )
         doc_id = existing["id"]
         if existing["status"] in ("done", "failed", "processing"):
             vs.delete_by_doc_id(str(doc_id))
+            ds.update_course(doc_id, course, course_id)
             ds.update_status(doc_id, "processing", chunk_count=0)
             logger.info("复用文档记录: doc_id=%s path=%s", doc_id, filename)
             return doc_id
 
-    doc_id = ds.create(filename=filename, file_path=resolved, course=course)
+    doc_id = ds.create(
+        filename=filename,
+        file_path=resolved,
+        course=course,
+        course_id=course_id,
+    )
     ds.update_status(doc_id, "processing")
     return doc_id
 
@@ -196,10 +212,24 @@ def _upsert_chunks_batched(
     vs: ChromaVectorStore,
     chunk_dicts: list[dict],
     embeddings: list[list[float]],
-) -> None:
+) -> bool:
+    """分批写入；任一批评因维度重建过集合则返回 True。"""
+    wiped = False
     for i in range(0, len(chunk_dicts), _UPSERT_BATCH):
         sl = slice(i, i + _UPSERT_BATCH)
-        vs.upsert(chunk_dicts[sl], embeddings[sl])
+        wiped = vs.upsert(chunk_dicts[sl], embeddings[sl]) or wiped
+    return wiped
+
+
+def _mark_sibling_docs_stale(
+    ds: SQLiteDocStore, keep_doc_id: int, course_id: str | None = None
+) -> int:
+    stale = 0
+    for doc in ds.list(course_id=course_id):
+        if doc["id"] != keep_doc_id and doc["status"] == "done":
+            ds.update_status(doc["id"], "failed", chunk_count=0)
+            stale += 1
+    return stale
 
 
 def _needs_reindex(existing: dict | None, mtime: float) -> bool:
@@ -218,13 +248,18 @@ def ingest_file(
     path: str,
     vs: ChromaVectorStore,
     ds: SQLiteDocStore,
-    course: str = "信号与系统",
+    course_id: str = DEFAULT_COURSE_ID,
+    course: str = DEFAULT_COURSE_NAME,
+    college_id: str = DEFAULT_COLLEGE_ID,
     display_name: str | None = None,
 ) -> str:
     """入库单文件，返回 doc_id。"""
+    if not course_id or not course_id.strip():
+        raise BadRequestException("course_id 不能为空")
+
     filepath = Path(path)
     filename = display_name or filepath.name
-    logger.info("开始入库: %s", filename)
+    logger.info("开始入库: %s course_id=%s", filename, course_id)
 
     ext = filepath.suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
@@ -232,7 +267,7 @@ def ingest_file(
             f"不支持的文件格式: {ext}，仅接受 PDF/TXT/MD/DOC/DOCX/PPTX"
         )
 
-    doc_id = _acquire_doc_id(ds, vs, filepath, filename, course)
+    doc_id = _acquire_doc_id(ds, vs, filepath, filename, course, course_id)
     logger.info("文档记录就绪: doc_id=%s", doc_id)
 
     try:
@@ -263,16 +298,30 @@ def ingest_file(
                 "source_file": filename,
                 "chunk_index": i,
                 "course": course,
+                "course_id": course_id,
+                "college_id": college_id,
                 "text": chunk_text,
                 "page": chunk_pages[i],
             })
 
-        _upsert_chunks_batched(vs, chunk_dicts, embeddings)
+        wiped = _upsert_chunks_batched(vs, chunk_dicts, embeddings)
+        if wiped:
+            stale = _mark_sibling_docs_stale(ds, doc_id, course_id=course_id)
+            if stale:
+                logger.warning(
+                    "Embedding 维度已变更，已将同课 %d 条其他资料标为 failed，请重新扫描/上传",
+                    stale,
+                )
         logger.info("向量写入完成: %s, %d chunks", filename, len(chunk_texts))
 
         ds.update_status(doc_id, "done", chunk_count=len(chunk_texts))
         ds.update_file_mtime(doc_id, filepath.stat().st_mtime)
-        logger.info("入库完成: %s -> doc_id=%s, %d chunks", filename, doc_id, len(chunk_texts))
+        logger.info(
+            "入库完成: %s -> doc_id=%s, %d chunks",
+            filename,
+            doc_id,
+            len(chunk_texts),
+        )
         return str(doc_id)
 
     except AppException:
@@ -288,9 +337,12 @@ def scan_knowledge_dir(
     vs: ChromaVectorStore,
     ds: SQLiteDocStore,
     *,
+    course_id: str = DEFAULT_COURSE_ID,
+    course: str = DEFAULT_COURSE_NAME,
+    college_id: str = DEFAULT_COLLEGE_ID,
     recover_stale: bool = False,
 ) -> None:
-    """扫描 knowledge 目录：新文件入库，mtime 变更的 done 文件重新入库。"""
+    """扫描 knowledge 目录并入库。"""
     data_dir = Path(config.storage.knowledge_dir)
     if not data_dir.exists():
         return
@@ -301,7 +353,8 @@ def scan_knowledge_dir(
             logger.info("已将 %d 条 processing 记录恢复为 failed", stale)
 
     files = [
-        f for f in data_dir.iterdir()
+        f
+        for f in data_dir.iterdir()
         if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
     ]
     to_ingest: list[Path] = []
@@ -309,6 +362,14 @@ def scan_knowledge_dir(
         resolved = str(f.resolve())
         mtime = f.stat().st_mtime
         existing = ds.find_by_path(resolved)
+        if existing and existing.get("course_id") and existing["course_id"] != course_id:
+            logger.info(
+                "跳过跨课文件 %s（归属 %s，当前扫描 %s）",
+                f.name,
+                existing["course_id"],
+                course_id,
+            )
+            continue
         if _needs_reindex(existing, mtime):
             to_ingest.append(f)
 
@@ -318,7 +379,14 @@ def scan_knowledge_dir(
     logger.info("发现 %d 个待入库/更新文件，开始自动导入…", len(to_ingest))
     for f in to_ingest:
         try:
-            doc_id = ingest_file(path=str(f.resolve()), vs=vs, ds=ds)
+            doc_id = ingest_file(
+                path=str(f.resolve()),
+                vs=vs,
+                ds=ds,
+                course_id=course_id,
+                course=course,
+                college_id=college_id,
+            )
             logger.info("自动入库: %s -> doc_id=%s", f.name, doc_id)
         except Exception as e:
             logger.warning("自动入库失败 %s: %s", f.name, e)

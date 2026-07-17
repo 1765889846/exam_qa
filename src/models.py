@@ -19,6 +19,7 @@ class AnswerData(BaseModel):
 
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=1, description="问题内容不能为空")
+    course_id: str = Field(..., min_length=1, description="课程 ID，检索隔离必填")
     mode: Literal["qa"] = "qa"
     stream: bool = False
 
@@ -56,6 +57,7 @@ class ParsingPatch(BaseModel):
 
 class AppPatch(BaseModel):
     max_upload_mb: int | None = Field(default=None, ge=1)
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] | None = None
 
 
 class ServerPatch(BaseModel):
@@ -66,6 +68,7 @@ class ServerPatch(BaseModel):
 class ProxyPatch(BaseModel):
     url: str | None = None
     no_proxy: str | None = None
+    enabled: bool | None = None
 
 
 class ConfigUpdateRequest(BaseModel):

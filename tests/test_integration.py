@@ -10,6 +10,13 @@ from src.services.parsing import parse_file
 from src.services.retrieval import retrieve
 from src.services.query import ask as query_ask
 from src.services.llm import OpenAIClient
+from src.services.storage.catalog_store import (
+    DEFAULT_COLLEGE_ID,
+    DEFAULT_COURSE_ID,
+    DEFAULT_COURSE_NAME,
+)
+
+_CID = DEFAULT_COURSE_ID
 
 
 @pytest.mark.integration
@@ -22,6 +29,7 @@ class TestIngestion:
             path=sample_md_file,
             vs=vector_store,
             ds=doc_store,
+            course_id=_CID,
         )
         assert doc_id is not None
         assert int(doc_id) > 0
@@ -29,6 +37,7 @@ class TestIngestion:
         doc = doc_store.get(int(doc_id))
         assert doc["status"] == "done"
         assert doc["chunk_count"] > 0
+        assert doc["course_id"] == _CID
 
     def test_ingest_txt(self, sample_txt_file, vector_store, doc_store):
         """上传 TXT 文件完整入库。"""
@@ -36,6 +45,7 @@ class TestIngestion:
             path=sample_txt_file,
             vs=vector_store,
             ds=doc_store,
+            course_id=_CID,
         )
         doc = doc_store.get(int(doc_id))
         assert doc["status"] == "done"
@@ -47,7 +57,7 @@ class TestIngestion:
         p.write_text("   \n  ", encoding="utf-8")
         from src.exceptions import BadRequestException
         with pytest.raises(BadRequestException):
-            ingest_file(path=str(p), vs=vector_store, ds=doc_store)
+            ingest_file(path=str(p), vs=vector_store, ds=doc_store, course_id=_CID)
 
     def test_ingest_unsupported_format(self, temp_dir, vector_store, doc_store):
         """不支持的文件格式应抛出异常。"""
@@ -55,7 +65,7 @@ class TestIngestion:
         p.write_text("fake", encoding="utf-8")
         from src.exceptions import UnsupportedFormatException
         with pytest.raises(UnsupportedFormatException):
-            ingest_file(path=str(p), vs=vector_store, ds=doc_store)
+            ingest_file(path=str(p), vs=vector_store, ds=doc_store, course_id=_CID)
 
     def test_parse_markdown(self, sample_md_file):
         """解析 MD 文件。"""
@@ -71,8 +81,7 @@ class TestRetrievalGeneration:
     @pytest.fixture(autouse=True)
     def _setup_data(self, vector_store, doc_store):
         """每个测试前导入一份测试文档。"""
-        # 创建测试 MD 文件
-        content = """# 信号与系统重点
+        content = """# 复习资料样例
 
 ## 傅里叶变换
 
@@ -110,6 +119,9 @@ fs/2 为奈奎斯特频率，低于此频率采样会产生混叠失真。
             path=self._test_file,
             vs=vector_store,
             ds=doc_store,
+            course_id=_CID,
+            course=DEFAULT_COURSE_NAME,
+            college_id=DEFAULT_COLLEGE_ID,
         )
 
     def test_retrieve_relevant(self, vector_store):
@@ -117,10 +129,10 @@ fs/2 为奈奎斯特频率，低于此频率采样会产生混叠失真。
         results = retrieve(
             query="傅里叶变换的定义",
             vs=vector_store,
+            course_id=_CID,
             top_k=3,
         )
         assert len(results) > 0
-        # 至少有一个结果的文本包含"傅里叶"
         texts = [r.get("text", "") for r in results]
         assert any("傅里叶" in t for t in texts)
 
@@ -129,11 +141,11 @@ fs/2 为奈奎斯特频率，低于此频率采样会产生混叠失真。
         results = retrieve(
             query="拉普拉斯变换",
             vs=vector_store,
+            course_id=_CID,
             top_k=5,
         )
         if results:
-            # 不相关查询的最高分应低于相关查询
-            assert results[0]["score"] < 0.5  # 远低于傅里叶查询
+            assert results[0]["score"] < 0.5
 
     def test_ask_end_to_end(self, vector_store):
         """端到端问答：检索 + LLM 生成。"""
@@ -148,6 +160,7 @@ fs/2 为奈奎斯特频率，低于此频率采样会产生混叠失真。
             mode="qa",
             vs=vector_store,
             llm=llm,
+            course_id=_CID,
         )
         assert result.grounded is True
         assert len(result.answer) > 0
@@ -166,6 +179,7 @@ fs/2 为奈奎斯特频率，低于此频率采样会产生混叠失真。
             mode="qa",
             vs=vector_store,
             llm=llm,
+            course_id=_CID,
         )
         assert result.grounded is False
         assert "未找到" in result.answer

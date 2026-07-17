@@ -1,6 +1,6 @@
 .sz-config {
   display: grid;
-  grid-template-columns: minmax(200px, 280px) 1fr;
+  grid-template-columns: var(--sz-cfg-nav-width) var(--sz-splitter) minmax(0, 1fr);
   height: calc(100vh - 3.25rem);
   overflow: hidden;
 }
@@ -12,7 +12,7 @@
   overflow-y: auto;
   min-height: 0;
   padding: 0.75rem;
-  background: var(--sz-bg-panel);
+  background: color-mix(in srgb, var(--sz-bg-panel) 92%, transparent);
   border-right: 1px solid var(--sz-border);
 }
 
@@ -20,7 +20,7 @@
   overflow-y: auto;
   min-height: 0;
   padding: 1rem 1.25rem 2rem;
-  background: var(--sz-bg-surface);
+  background: color-mix(in srgb, var(--sz-bg-surface) 88%, transparent);
 }
 
 .sz-config-search input {
@@ -28,11 +28,12 @@
   box-sizing: border-box;
   font-family: inherit;
   font-size: 0.875rem;
+  font-weight: 600;
   color: var(--sz-text);
   background: var(--sz-bg-surface);
   border: 1px solid var(--sz-border);
-  border-radius: var(--sz-radius-sm);
-  padding: 0.4rem 0.55rem;
+  border-radius: 999px;
+  padding: 0.45rem 0.85rem;
 }
 
 .sz-config-search input:focus {
@@ -242,6 +243,81 @@
   color: var(--sz-danger);
 }
 
+.sz-llm-block {
+  margin: 0 0 1.5rem;
+  padding: 1rem 1.1rem;
+  border-radius: var(--sz-radius-lg);
+  background: color-mix(in srgb, var(--sz-bg-panel) 92%, transparent);
+  border: 1px solid var(--sz-border);
+}
+
+.sz-llm-block h3 {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+}
+
+.sz-llm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.sz-llm-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: var(--sz-radius-md);
+  border: 1px solid var(--sz-border);
+  background: var(--sz-bg-panel);
+}
+
+.sz-llm-row.is-active {
+  border-color: color-mix(in srgb, var(--sz-accent) 45%, var(--sz-border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sz-accent) 18%, transparent);
+}
+
+.sz-llm-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.sz-llm-url {
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 28rem;
+}
+
+.sz-llm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.sz-llm-badge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--sz-accent);
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--sz-accent) 12%, transparent);
+}
+
+.sz-btn-danger {
+  color: var(--sz-danger);
+  border-color: color-mix(in srgb, var(--sz-danger) 35%, var(--sz-border));
+}
+
 .sz-sr-only {
   position: absolute;
   width: 1px;
@@ -260,6 +336,10 @@
     grid-template-rows: auto 1fr;
     height: auto;
     min-height: calc(100vh - 3.25rem);
+  }
+
+  .sz-splitter {
+    display: none;
   }
 
   .sz-config-nav {

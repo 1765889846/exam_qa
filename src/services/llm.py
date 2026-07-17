@@ -48,6 +48,7 @@ class OpenAIClient:
                 api_key=api_key,
                 base_url=base_url,
                 timeout=timeout,
+                max_retries=1,
                 http_client=create_openai_http_client(timeout),
             )
 

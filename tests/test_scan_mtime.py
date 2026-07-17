@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 from src.services.ingestion import _needs_reindex, ingest_file, scan_knowledge_dir
 
 
@@ -25,6 +27,7 @@ class TestNeedsReindex:
         assert _needs_reindex({"status": "processing", "file_mtime": None}, 100.0) is False
 
 
+@pytest.mark.integration
 class TestScanReindex:
     def test_scan_reindexes_on_mtime_change(self, temp_dir, vector_store, doc_store, monkeypatch):
         knowledge = temp_dir / "knowledge"

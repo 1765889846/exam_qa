@@ -1,15 +1,26 @@
-"""POST /api/v1/documents — 上传资料并入库。"""
+"""documents API — 上传 / 列表 / 扫描 / 删除。"""
 
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from starlette import status
 
 from src.config import config
-from src.dependencies import get_current_user, get_doc_store, get_vector_store
-from src.exceptions import AppException, BadRequestException, NotFoundException, UnsupportedFormatException
+from src.dependencies import (
+    get_catalog_store,
+    get_current_user,
+    get_doc_store,
+    get_vector_store,
+)
+from src.exceptions import (
+    AppException,
+    BadRequestException,
+    NotFoundException,
+    UnsupportedFormatException,
+)
 from src.services.ingestion import SUPPORTED_EXTENSIONS, ingest_file, scan_knowledge_dir
+from src.services.storage.catalog_store import CatalogStore
 from src.services.storage.doc_store import SQLiteDocStore
 from src.services.storage.vector_store import ChromaVectorStore
 
@@ -23,7 +34,6 @@ def _knowledge_dir() -> Path:
 
 
 def _write_upload_limited(src: UploadFile, dest: Path, max_bytes: int) -> None:
-    """流式写入并限制大小。"""
     total = 0
     with open(dest, "wb") as out:
         while True:
@@ -42,11 +52,14 @@ def _write_upload_limited(src: UploadFile, dest: Path, max_bytes: int) -> None:
 @router.post("")
 async def upload_document(
     file: UploadFile = File(...),
+    course_id: str = Form(...),
     vs: ChromaVectorStore = Depends(get_vector_store),
     ds: SQLiteDocStore = Depends(get_doc_store),
+    catalog: CatalogStore = Depends(get_catalog_store),
     _user=Depends(get_current_user),
 ):
-    """接收上传文件，保存到 data/knowledge/ 后调用入库管道。"""
+    course = catalog.require_course(course_id)
+
     if not file.filename:
         raise BadRequestException("文件名为空")
 
@@ -69,6 +82,9 @@ async def upload_document(
             path=str(save_path.resolve()),
             vs=vs,
             ds=ds,
+            course_id=course_id,
+            course=course["name"],
+            college_id=course["college_id"],
             display_name=file.filename,
         )
     except AppException:
@@ -82,50 +98,74 @@ async def upload_document(
             "filename": file.filename,
             "status": "done",
             "stored_path": str(save_path),
+            "course_id": course_id,
         },
     }
 
 
 @router.get("")
 async def list_documents(
+    course_id: str,
     ds: SQLiteDocStore = Depends(get_doc_store),
+    vs: ChromaVectorStore = Depends(get_vector_store),
+    catalog: CatalogStore = Depends(get_catalog_store),
     _user=Depends(get_current_user),
 ):
-    """列出全部文档及入库状态。"""
-    docs = ds.list()
+    catalog.require_course(course_id)
+    docs = ds.list(course_id=course_id)
+    emb = config.embedding
+    dim = vs.stored_embedding_dim()
     return {
         "code": status.HTTP_200_OK,
         "data": {
             "items": docs,
             "total": len(docs),
+            "embedding": {
+                "provider": emb.provider,
+                "model": emb.model,
+                "dim": int(dim) if dim is not None else None,
+            },
         },
     }
 
 
 @router.post("/scan")
 async def scan_data_dir(
+    course_id: str = Form(...),
     vs: ChromaVectorStore = Depends(get_vector_store),
     ds: SQLiteDocStore = Depends(get_doc_store),
+    catalog: CatalogStore = Depends(get_catalog_store),
     _user=Depends(get_current_user),
 ):
-    """扫描 data/knowledge/ 目录，导入未入库或已变更的 PDF/TXT/MD/DOC/DOCX/PPTX 文件。"""
-    scan_knowledge_dir(vs, ds, recover_stale=False)
+    course = catalog.require_course(course_id)
+    scan_knowledge_dir(
+        vs,
+        ds,
+        course_id=course_id,
+        course=course["name"],
+        college_id=course["college_id"],
+        recover_stale=False,
+    )
     return {
         "code": status.HTTP_200_OK,
-        "data": {"message": "扫描完成"},
+        "data": {"message": "扫描完成", "course_id": course_id},
     }
 
 
 @router.delete("/{doc_id}")
 async def delete_document(
     doc_id: int,
+    course_id: str,
     vs: ChromaVectorStore = Depends(get_vector_store),
     ds: SQLiteDocStore = Depends(get_doc_store),
+    catalog: CatalogStore = Depends(get_catalog_store),
     _user=Depends(get_current_user),
 ):
-    """删除文档及其全部向量数据。"""
+    catalog.require_course(course_id)
     doc = ds.get(doc_id)
     if doc is None:
+        raise NotFoundException(f"文档不存在: {doc_id}")
+    if doc.get("course_id") != course_id:
         raise NotFoundException(f"文档不存在: {doc_id}")
 
     vs.delete_by_doc_id(str(doc_id))

@@ -1,4 +1,4 @@
-"""Read/write project .env for workbench settings."""
+"""读写项目根目录 .env。"""
 
 from __future__ import annotations
 

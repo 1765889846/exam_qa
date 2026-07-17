@@ -1,5 +1,7 @@
 """单元测试：SQLiteDocStore CRUD 操作。"""
 
+from src.services.storage.catalog_store import DEFAULT_COURSE_ID, DEFAULT_COURSE_NAME
+
 
 class TestDocStore:
     """文档元数据 CRUD 测试，使用隔离的 SQLite 实例。"""
@@ -9,7 +11,8 @@ class TestDocStore:
         doc_id = doc_store.create(
             filename="test.pdf",
             file_path="/tmp/test.pdf",
-            course="信号与系统",
+            course=DEFAULT_COURSE_NAME,
+            course_id=DEFAULT_COURSE_ID,
         )
         assert doc_id > 0
 
@@ -18,7 +21,8 @@ class TestDocStore:
         assert doc["filename"] == "test.pdf"
         assert doc["status"] == "pending"
         assert doc["chunk_count"] == 0
-        assert doc["course"] == "信号与系统"
+        assert doc["course"] == DEFAULT_COURSE_NAME
+        assert doc["course_id"] == DEFAULT_COURSE_ID
 
     def test_update_status(self, doc_store):
         """更新文档状态。"""
@@ -39,6 +43,20 @@ class TestDocStore:
         assert len(docs) == 2
         filenames = {d["filename"] for d in docs}
         assert filenames == {"a.pdf", "b.pdf"}
+
+    def test_list_by_course_id(self, doc_store):
+        doc_store.create(
+            "a.pdf", "/tmp/a.pdf", course_id=DEFAULT_COURSE_ID
+        )
+        doc_store.create(
+            "b.pdf",
+            "/tmp/b.pdf",
+            course="思政原理",
+            course_id="course-ideology-2025",
+        )
+        docs = doc_store.list(course_id=DEFAULT_COURSE_ID)
+        assert len(docs) == 1
+        assert docs[0]["filename"] == "a.pdf"
 
     def test_delete(self, doc_store):
         """删除文档后查询返回 None。"""

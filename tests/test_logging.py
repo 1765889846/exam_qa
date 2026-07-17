@@ -25,3 +25,13 @@ def test_setup_logging_is_idempotent():
     setup_logging(debug=False)
     setup_logging(debug=False)
     assert logging.getLogger().level == logging.INFO
+
+
+def test_apply_log_level_updates_root():
+    from src.utils.logging import apply_log_level
+
+    setup_logging(level="INFO")
+    apply_log_level("WARNING")
+    assert logging.getLogger().level == logging.WARNING
+    apply_log_level("DEBUG")
+    assert logging.getLogger().level == logging.DEBUG

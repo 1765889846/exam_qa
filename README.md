@@ -1,15 +1,15 @@
 <div align="center">
 
-<h1>exam-rag</h1>
-<p><strong>本地 RAG 复习助手 · 信号与系统课程</strong></p>
+<h1>溯知</h1>
+<p><code>exam-rag</code></p>
+<p><strong>据源而答 · 出处可循</strong></p>
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![ChromaDB](https://img.shields.io/badge/ChromaDB-0.5+-orange?style=flat-square)](https://www.trychroma.com/)
 [![uv](https://img.shields.io/badge/uv-package-DE5FE9?style=flat-square)](https://docs.astral.sh/uv/)
-[![Stage](https://img.shields.io/badge/stage-P0-lightgrey?style=flat-square)](#)
 
-**上传课程资料 · 语义检索 · 带引用回答 · 低分拒答**
+上传资料 · 语义检索 · 带引用作答 · 依据不足则拒答
 
 [快速开始](#快速开始) · [架构](#架构) · [配置](#配置) · [API](#api) · [开发](#开发) · [文档](docs/)
 
@@ -17,29 +17,37 @@
 
 ---
 
+## 这是什么
+
+把讲义、笔记、真题放进资料库，用自然语言提问。回答必须能落到具体片段上；检索分数不够就明确拒答，不硬编。
+
+面向备考与复盘：资料在你这边，按课程隔离（见 `docs/04`）。
+
+---
+
 ## 快速开始
 
-> [!TIP]
-> 需要 Python ≥ 3.11、[uv](https://docs.astral.sh/uv/)、[pnpm](https://pnpm.io/)，以及 OpenAI 兼容 API（`LLM_API_KEY`）。扫描版 PDF 可选 [Tesseract](https://github.com/tesseract-ocr/tesseract)（`eng` / `chi_sim`）。
+> 需要 Python ≥ 3.11、[uv](https://docs.astral.sh/uv/)，以及 OpenAI 兼容 API（`LLM_API_KEY`）。扫描版 PDF 可选 [Tesseract](https://github.com/tesseract-ocr/tesseract)（`eng` / `chi_sim`）。
 
 ```bash
-cp .env.example .env          # 填写 LLM_API_KEY
-uv sync && pnpm install && pnpm build
+cp .env.example .env          # 填写 LLM_API_KEY（或之后在设置页注册模型）
+uv sync
 uv run exam                   # → http://127.0.0.1:8787
 ```
 
 | 地址 | 用途 |
 |:-----|:-----|
-| [`/`](http://127.0.0.1:8787/) | Web 工作台（资料库 + 问答） |
-| [`/settings`](http://127.0.0.1:8787/settings) | 运行配置（只读） |
-| [`/docs`](http://127.0.0.1:8787/docs) | OpenAPI 交互文档 |
+| [`/sz/`](http://127.0.0.1:8787/sz/) | 对话 |
+| [`/sz-docs/`](http://127.0.0.1:8787/sz-docs/) | 资料上传 / 扫描 |
+| [`/sz-cfg/`](http://127.0.0.1:8787/sz-cfg/) | 设置（含 LLM 注册与切换） |
+| [`/docs`](http://127.0.0.1:8787/docs) | OpenAPI |
 | [`/api/v1/health`](http://127.0.0.1:8787/api/v1/health) | 健康检查 |
 
-启动时自动：校验配置 → 预热 Embedding → 扫描 `data/knowledge/` 未入库文件。
+前端为手写 HTML/CSS/JS（无构建），挂载在 `www/`。启动时校验配置并扫描 `data/knowledge/` 中尚未入库的文件（默认课）。
 
 ```bash
 curl http://127.0.0.1:8787/api/v1/health
-uv run pytest -q              # 单元测试（默认跳过 integration）
+uv run pytest -q
 ```
 
 ---
@@ -50,69 +58,74 @@ uv run pytest -q              # 单元测试（默认跳过 integration）
 flowchart TB
     subgraph ingest["入库"]
         direction LR
-        I1["上传/扫描"] --> I2["解析"] --> I3["分块"] --> I4["向量化"] --> I5[("Chroma + SQLite")]
+        I1["上传 / 扫描"] --> I2["解析"] --> I3["分块"] --> I4["向量化"] --> I5[("Chroma + SQLite")]
     end
 
-    subgraph query["查询"]
+    subgraph query["问答"]
         direction LR
-        Q1["用户提问"] --> Q2["向量检索"] --> Q3{"score ≥ 阈值?"}
+        Q1["提问"] --> Q2["向量检索"] --> Q3{"score ≥ 阈值?"}
         Q3 -->|是| Q4["LLM 生成"] --> Q5["答案 + citations"]
         Q3 -->|否| Q6["拒答 · grounded: false"]
     end
 ```
 
-> [!NOTE]
-> 检索最高分低于 `score_threshold` 时返回 `grounded: false`，固定文案「资料库中未找到相关内容」。
+检索最高分低于 `score_threshold` 时返回 `grounded: false`，文案固定为「资料库中未找到相关内容」。
 
 | 模块 | 职责 |
 |:-----|:-----|
 | `services/ingestion.py` | 解析 → 分块 → 向量化 → 写入 |
-| `services/parsing.py` | PDF / DOCX / PPTX / TXT / MD（PDF 可选 OCR；`.doc` 需 LibreOffice） |
-| `services/retrieval.py` | 向量相似度 top_k |
-| `services/generation.py` | 拼 prompt、调 LLM、组装 citations |
+| `services/parsing.py` | PDF / DOCX / PPTX / TXT / MD（PDF 可选 OCR） |
+| `services/retrieval.py` | 向量相似度 top_k（按 `course_id`） |
+| `services/generation.py` | 拼 prompt、调 LLM、组装引用 |
 | `services/query.py` | 串联检索与生成，拒答判断 |
-| `services/embedding.py` | 本地 sentence-transformers 或 OpenAI 兼容 API |
+| `services/embedding.py` | sentence-transformers 或 OpenAI 兼容 API |
 | `services/llm.py` | OpenAI 兼容对话 API |
+| `services/llm_providers.py` | 模型注册表（`data/llm_providers.json`） |
 
 <details>
 <summary><strong>目录结构</strong></summary>
 
 ```
 exam-rag/
-├── data/knowledge/          # 原始资料
-├── storage/                 # Chroma · SQLite · 日志
+├── data/knowledge/       # 原始资料
+├── data/llm_providers.json  # LLM 注册表（运行时生成）
+├── storage/              # Chroma · SQLite · 日志
 ├── src/
-│   ├── main.py              # FastAPI 入口
-│   ├── apis/v1/             # health · config · documents · ask
-│   └── services/            # 业务逻辑 + storage/
-├── workbench/               # React + Vite 前端源码
-├── www/                     # pnpm build 输出
+│   ├── main.py
+│   ├── apis/v1/          # health · config · llm-providers · catalog · documents · ask · embedding
+│   └── services/
+├── www/
+│   ├── shared/           # tokens · shell · api · KaTeX
+│   ├── sz/               # 对话
+│   ├── sz-docs/          # 资料
+│   └── sz-cfg/           # 设置
 └── tests/
 ```
 
 </details>
 
-README 用 Mermaid 渲染；Excalidraw 风格 SVG：`uv run python scripts/gen_arch_svgs.py`，或编辑 `docs/assets/excalidraw/*.excalidraw`。
-
 ---
 
 ## 配置
 
-优先级：**环境变量 > `.env` > 代码默认值**。复制 `.env.example` 后按需修改。
+优先级：**环境变量 > `.env` > 代码默认值**。复制 `.env.example` 后按需修改；也可在 `/sz-cfg/` 写入。
 
 | 分组 | 关键变量 |
 |:-----|:---------|
-| LLM | `LLM_API_KEY`（必填）· `LLM_BASE_URL` · `LLM_MODEL` |
+| LLM | `LLM_PROVIDER`（注册表名）· `LLM_API_KEY` · `LLM_BASE_URL` · `LLM_MODEL` |
 | Embedding | `EMBEDDING_PROVIDER`（`local` / `openai`）· `EMBEDDING_MODEL` |
 | 存储 | `CHROMA_PATH` · `SQLITE_PATH` · `KNOWLEDGE_DIR` · `MAX_UPLOAD_MB` |
 | PDF | `PDF_USE_OCR` · `PDF_FORCE_OCR` · `PDF_OCR_LANGUAGE` |
+| 代理 | `PROXY_URL` · `PROXY_ENABLED` · `NO_PROXY` |
+
+推荐在设置页 **注册多个 LLM**（OpenAI 兼容 / 本地 Ollama），再「设为当前」；活跃项会同步回 `.env`。
 
 <details>
-<summary><strong>检索与分块参数</strong>（<code>config.py</code>，无 env 覆盖）</summary>
+<summary><strong>检索与分块</strong>（<code>config.py</code>）</summary>
 
-| 参数 | 默认值 |
-|:-----|:-------|
-| `top_k` | 20 |
+| 参数 | 默认 |
+|:-----|:-----|
+| `top_k` | 5 |
 | `score_threshold` | 0.25 |
 | `chunk_size` | 800 |
 | `chunk_overlap` | 50 |
@@ -123,33 +136,38 @@ README 用 Mermaid 渲染；Excalidraw 风格 SVG：`uv run python scripts/gen_a
 
 ## API
 
-统一响应：`{ "code": 200, "data": { ... } }` 或 `{ "code": 4xx, "message": "..." }`。
+统一响应：`{ "code": 200, "data": … }` 或 `{ "code": 4xx, "message": "…" }`。
 
 | 方法 | 路径 | 说明 |
 |:----:|:-----|:-----|
-| `GET` | `/api/v1/health` | Chroma / SQLite / Embedding / LLM 连通性 |
-| `GET` | `/api/v1/config` | 非敏感配置快照 |
-| `POST` | `/api/v1/documents` | 上传资料并入库 |
-| `GET` | `/api/v1/documents` | 列出全部文档 |
-| `POST` | `/api/v1/documents/scan` | 扫描 `data/knowledge/` |
-| `DELETE` | `/api/v1/documents/{doc_id}` | 删除文档及向量 |
-| `POST` | `/api/v1/ask` | 问答 |
+| `GET` | `/api/v1/health` | 连通性 |
+| `GET` / `PATCH` | `/api/v1/config` | 读写配置 |
+| `GET` / `POST` | `/api/v1/llm-providers` | 列出 / 注册模型 |
+| `POST` | `/api/v1/llm-providers/active` | 切换当前模型 |
+| `DELETE` | `/api/v1/llm-providers/{name}` | 删除注册项 |
+| `POST` | `/api/v1/embedding/warmup` | 预热本地 Embedding |
+| `GET` | `/api/v1/colleges` | 学院列表 |
+| `GET` | `/api/v1/courses` | 课程列表（可选 `?college_id=`） |
+| `POST` | `/api/v1/documents` | 上传并入库（Form **必填** `course_id`） |
+| `GET` | `/api/v1/documents` | 资料列表（**必填** `?course_id=`） |
+| `POST` | `/api/v1/documents/scan` | 扫描 `data/knowledge/`（Form **必填** `course_id`） |
+| `DELETE` | `/api/v1/documents/{doc_id}` | 删除（**必填** `?course_id=`，须匹配归属） |
+| `POST` | `/api/v1/ask` | 问答（JSON **必填** `course_id`） |
+
+检索与资料按 `course_id` 隔离。默认种子为 `course-default`。同一物理文件不会跨课串改归属。
 
 <details>
 <summary><strong>问答示例</strong></summary>
-
-**请求**
 
 ```json
 POST /api/v1/ask
 {
   "question": "卷积定理是什么？",
+  "course_id": "course-default",
   "mode": "qa",
   "stream": false
 }
 ```
-
-**响应**
 
 ```json
 {
@@ -164,44 +182,53 @@ POST /api/v1/ask
 }
 ```
 
-`stream: true` 时返回 **SSE**（`text/event-stream`），事件顺序：`phase` → `delta` → `done`（拒答时直接 `done`）。
+`stream: true` 时为 SSE：`phase` → `delta` → `done`（拒答则直接 `done`）。
 
 </details>
 
-支持上传：`.pdf` · `.txt` · `.md` · `.doc` · `.docx` · `.pptx`
+支持：`.pdf` · `.txt` · `.md` · `.doc` · `.docx` · `.pptx`
+
+---
+
+## 现状与路线
+
+| 阶段 | 状态 |
+|:-----|:-----|
+| P0 入库 / 问答 / 拒答 / WebUI | 已实现 |
+| P1-A 学院·课程目录与隔离 | 已实现 |
+| P1-B `mode=concept` · 混合检索 | 未做（见 `docs/01`） |
+| P2 章节概览 · Reranker · 离线评估 | 未做 |
 
 ---
 
 ## 开发
 
 ```bash
-uv run exam                   # 启动（需 pnpm build）
-DEBUG=true uv run exam        # 热重载
-pnpm dev                      # Vite 热更新，/api 代理到 :8787
-pnpm build && pnpm typecheck
-uv run pytest -q -m integration   # 需 Embedding + LLM API
+uv run exam
+DEBUG=true uv run exam
+uv run pytest -q
+uv run pytest -q -m integration
 ```
 
 | 约定 | 说明 |
 |:-----|:-----|
-| `apis/` | 只做 HTTP，不写 RAG 细节 |
+| `apis/` | 只做 HTTP |
 | `services/` | 不 import FastAPI |
 | 新依赖 | `uv add <package>` |
 
-> [!IMPORTANT]
-> WSL 用户：venv 放在 `~/` 本地路径，勿放 `/mnt/` 挂载盘——IO 慢会导致模型加载超时。
+WSL：venv 请放在 `~/` 下，勿放 `/mnt/` 挂载盘，否则模型加载容易超时。
 
 ---
 
-## 设计文档
+## 文档
 
 | 文档 | 内容 |
 |:-----|:-----|
-| [01 产品边界](docs/01-产品边界.md) | 场景、功能清单、Agent 形态 |
-| [02 模块架构](docs/02-模块架构.md) | 流水线、数据模型、API 细节 |
-| [03 工程规范](docs/03-工程规范.md) | uv、日志、部署约定 |
-| [04 后续演进](docs/04-后续演进规范.md) | P1～P3 路线图 |
-| [05 Web UI 规划](docs/05-WebUI规划.md) | 工作台规格、React + Vite 方案 |
+| [01 产品边界](docs/01-产品边界.md) | 场景与范围 |
+| [02 模块架构](docs/02-模块架构.md) | 流水线与数据模型 |
+| [03 工程规范](docs/03-工程规范.md) | 工具链与约定 |
+| [04 后续演进](docs/04-后续演进规范.md) | 多课程隔离、检索增强、Agent |
+| [05 Web UI](docs/05-WebUI规划.md) | 工作台规格 |
 
 ---
 
@@ -209,7 +236,7 @@ uv run pytest -q -m integration   # 需 Embedding + LLM API
 
 <sub>
 
-**exam-rag** · 本地 RAG 复习助手 · 资料不上云
+**溯知** · exam-rag · 据源而答 · 资料不上云
 
 </sub>
 

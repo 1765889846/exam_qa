@@ -1,6 +1,6 @@
 # 05 Web UI 规划
 
-> **状态（2026-07）**：已定稿。废弃 React/Vite `workbench/`；改为手写 HTML/CSS/JS，双挂载点 `/sz`（工作台）与 `/sz-cfg`（设置）。  
+> **状态（2026-07）**：已定稿。废弃 React/Vite `workbench/`；手写 HTML/CSS/JS，三挂载点 `/sz`（对话）、`/sz-docs`（资料）、`/sz-cfg`（设置）。  
 > 产品：溯知（exam-rag）· 据源而答的课程资料问答  
 > **关联**：[01-产品边界](./01-产品边界.md) · [02-模块架构](./02-模块架构.md) · [03-工程规范](./03-工程规范.md) · [04-后续演进规范](./04-后续演进规范.md)
 
@@ -32,11 +32,12 @@
 
 | URL | 目录 | 职责 |
 |---|---|---|
-| `/sz/` | `www/sz/` | 工作台：顶栏 + 左资料库 + 右问答 |
+| `/sz/` | `www/sz/` | 对话：顶栏 + 左会话历史 + 右问答 |
+| `/sz-docs/` | `www/sz-docs/` | 资料：上传 / 扫描 / 列表 / 删除 |
 | `/sz-cfg/` | `www/sz-cfg/` | 设置：顶栏 + 左配置分组 + 右表单 |
 | `/` | — | 有前端时重定向到 `/sz/`；否则 `/docs` |
 
-小屏（`≤768px`）：工作台双栏改为上下堆叠；设置页左列表置顶可滚，主表单在下；顶栏链接可收进「⋯」。
+小屏（`≤768px`）：对话页双栏改为上下堆叠；设置页左列表置顶可滚，主表单在下；顶栏链接可收进「⋯」。
 
 ---
 
@@ -50,7 +51,8 @@
 
 | 挂载前缀 | 静态目录 | 说明 |
 |---|---|---|
-| `/sz` | `www/sz/` | 工作台 |
+| `/sz` | `www/sz/` | 对话 |
+| `/sz-docs` | `www/sz-docs/` | 资料 |
 | `/sz-cfg` | `www/sz-cfg/` | 设置 |
 | `/shared` | `www/shared/` | 共享 tokens、api、theme、shell、KaTeX。**必须单独 mount**：`StaticFiles` 不能从 `/sz` 挂载点越界提供 `../shared`，浏览器把相对路径解析成 `/shared/...` |
 
@@ -64,8 +66,8 @@
 | 健康 | `GET /api/v1/health` → 顶栏状态点 |
 | 目录 | `GET /api/v1/colleges`、`GET /api/v1/courses`；`course_id` 必填并持久化 `sz.course_id` |
 | 资料 | `POST/GET/DELETE /api/v1/documents`、`POST /api/v1/documents/scan` |
-| 问答 | `POST /api/v1/ask`（`stream=true` → SSE）；展示 grounded、citations、KaTeX |
-| 配置 | `GET/PATCH /api/v1/config` — **全量可写**（见 §5） |
+| 问答 | `POST /api/v1/ask`（`stream=true` → SSE）；展示 citations、KaTeX（拒答仍看 `grounded`，不展示徽章） |
+| 配置 | `GET/PATCH /api/v1/config`；LLM 注册/切换：`/api/v1/llm-providers` |
 
 ### 2.3 启动
 
@@ -94,6 +96,7 @@ uv run exam
 - 删除「整棵 `www/` 挂到 `/`」的做法
 - `app.mount("/shared", StaticFiles(...))`（无 `html=True`）
 - `app.mount("/sz", StaticFiles(..., html=True))`
+- `app.mount("/sz-docs", StaticFiles(..., html=True))`
 - `app.mount("/sz-cfg", StaticFiles(..., html=True))`
 - `GET /` → `RedirectResponse("/sz/")`
 - banner / 启动日志中的 UI 地址改为 `/sz/`
@@ -106,14 +109,18 @@ uv run exam
 
 **壳（shared）**
 
-- 顶栏：品牌「溯知」、链到工作台 `/sz/`、设置 `/sz-cfg/`、课程选择、HealthBadge、主题切换
+- 顶栏：品牌「溯知」、链到对话 `/sz/`、资料 `/sz-docs/`、设置 `/sz-cfg/`、课程选择、HealthBadge、主题切换
 - Toast / 行内错误提示
 
-**工作台 `/sz`**
+**对话 `/sz`**
 
-- 左：上传区（固定）+ 文档列表（独立滚动）+ 删除 / 扫描
-- 右：回答区（独立滚动，KaTeX + citations + grounded）+ 输入区（底部固定）
+- 左：会话历史（新对话 / 切换 / 删除；`localStorage` 按 `course_id` 隔离）
+- 右：回答区（独立滚动，KaTeX + citations）+ 输入区（底部固定）
 - 分区各自 `overflow`，互不带动整页滚动
+
+**资料 `/sz-docs`**
+
+- 上传区（进度条）+ 文档列表（独立滚动）+ 删除 / 扫描
 
 **设置 `/sz-cfg`**
 
@@ -129,38 +136,28 @@ exam/
 ├── www/
 │   ├── shared/                 # mount → /shared
 │   │   ├── css/
-│   │   │   └── tokens.css      # 亮/暗 CSS 变量
+│   │   │   └── tokens.css
 │   │   ├── js/
-│   │   │   ├── api.js          # fetch 封装、unwrap {code,data}
-│   │   │   ├── theme.js        # system/light/dark + localStorage
-│   │   │   └── shell.js        # 顶栏、health、课程选择器、页间导航
-│   │   └── lib/
-│   │       └── katex/          # 静态 KaTeX
-│   ├── sz/                     # mount → /sz
-│   │   ├── index.html
-│   │   ├── css/
-│   │   │   └── workbench.css
-│   │   └── js/
-│   │       └── workbench.js
-│   └── sz-cfg/                 # mount → /sz-cfg
-│       ├── index.html
-│       ├── css/
-│       │   └── settings.css
-│       └── js/
-│           └── settings.js
-├── src/                        # FastAPI（挂载逻辑见 §2.5）
+│   │   │   ├── api.js
+│   │   │   ├── theme.js
+│   │   │   ├── shell.js
+│   │   │   └── conversations.js  # 本地会话历史
+│   │   └── lib/katex/
+│   ├── sz/                     # mount → /sz（对话）
+│   ├── sz-docs/                # mount → /sz-docs（资料）
+│   └── sz-cfg/                 # mount → /sz-cfg（设置）
+├── src/
 └── docs/
-    └── 05-WebUI规划.md         # 本文
 ```
 
 ### 命名规范
 
 | 层 | 规则 | 示例 |
 |---|---|---|
-| URL 挂载 | 产品前缀短码 | `/sz`、`/sz-cfg` |
-| 目录 | 与挂载同名 | `www/sz/`、`www/sz-cfg/` |
+| URL 挂载 | 产品前缀短码 | `/sz`、`/sz-docs`、`/sz-cfg` |
+| 目录 | 与挂载同名 | `www/sz/`、`www/sz-docs/` |
 | CSS 类 | `sz-*` | `sz-shell`、`sz-panel`、`sz-config-list` |
-| localStorage | `sz.*` | `sz.theme`、`sz.course_id` |
+| localStorage | `sz.*` | `sz.theme`、`sz.course_id`、`sz.conversations.{courseId}` |
 | 后端 API | 不变 | `/api/v1/*` |
 
 禁止再用已删除的 `workbench/`（React）路径与 `pnpm` 工作区约定。
@@ -171,8 +168,10 @@ exam/
 
 | 模块 | 入口 | 独占职责 | 可依赖 |
 |---|---|---|---|
-| `shell` | `shared/js/shell.js` | 顶栏、主题、health 轮询、课程选择、`/sz`↔`/sz-cfg` 链接 | `api.js`、`theme.js` |
-| `workbench` | `sz/js/workbench.js` | 资料 CRUD/scan、问答 SSE、citations、KaTeX | `shared/*` |
+| `shell` | `shared/js/shell.js` | 顶栏、主题、health 轮询、课程选择、页间导航 | `api.js`、`theme.js` |
+| `conversations` | `shared/js/conversations.js` | 本地会话 CRUD（按 course_id） | — |
+| `workbench` | `sz/js/workbench.js` | 会话历史 UI、问答 SSE、citations、KaTeX | `shared/*` |
+| `docs` | `sz-docs/js/docs.js` | 资料 CRUD/scan、上传进度 | `shared/*` |
 | `settings` | `sz-cfg/js/settings.js` | 配置分组 UI、表单、PATCH、脱敏密钥 | `shared/*` |
 | `api` | `shared/js/api.js` | 统一请求与错误 | — |
 
@@ -180,17 +179,17 @@ exam/
 
 | 分组 | 字段来源 |
 |---|---|
-| LLM | model、base_url、api_key、timeout |
+| LLM | 注册表选择/增删（`llm-providers`）+ timeout；活跃项同步写入 `.env` 的 `LLM_*` / `LLM_PROVIDER` |
 | Embedding | provider、model、base_url、api_key、timeout |
 | 检索 | top_k、score_threshold |
 | 分块 | chunk_size、chunk_overlap |
 | 解析 / OCR | pdf_use_ocr、pdf_force_ocr、pdf_ocr_language |
-| 代理 | url、no_proxy、enabled |
-| 服务 / 上传 | host、port、max_upload_mb、debug |
+| 代理 | url、no_proxy、**enabled**（可写；关闭后仍保留 URL，出站直连） |
+| 服务 / 上传 | host、port、max_upload_mb、debug、**log_level**（DEBUG/INFO/WARNING/ERROR，立即生效） |
 
 密钥：读时脱敏；写时若仍为掩码则跳过该字段。保存后展示后端返回的 `settings_effects`。只读展示：`storage.knowledge_dir`、`meta.config_path`、`meta.env_writable`。
 
-学院/课程**目录管理**不在本阶段设置页内（选课在工作台顶栏）；后续若要做可另开分组。
+学院/课程**目录管理**不在本阶段设置页内（选课在顶栏）；后续若要做可另开分组。
 
 ---
 
@@ -224,15 +223,16 @@ exam/
 
 | 区域 | 行为 |
 |---|---|
-| 工作台 · 文档列表 | 独立 `overflow-y: auto`；上传区不随列表滚走 |
-| 工作台 · 回答区 | 独立滚动；输入区 sticky/固定底 |
+| 对话 · 会话列表 | 独立 `overflow-y: auto` |
+| 对话 · 回答区 | 独立滚动；输入区 sticky/固定底 |
+| 资料 · 文档列表 | 独立 `overflow-y: auto`；上传区不随列表滚走 |
 | 设置 · 分组列表 | 独立滚动 |
 | 设置 · 表单主区 | 独立滚动 |
-| `html/body` | 桌面工作台避免整页双滚动条 |
+| `html/body` | 桌面避免整页双滚动条 |
 
 ### 7.3 响应式与无障碍
 
-- `≤768px`：工作台列改行；设置双栏改堆叠
+- `≤768px`：对话列改行；设置双栏改堆叠
 - `:focus-visible` 可见焦点环
 - Enter 提交问题（Shift+Enter 换行，若采用 textarea）
 - `prefers-reduced-motion: reduce` 关闭非必要动画
@@ -252,10 +252,10 @@ exam/
 
 ```
 - [ ] GET / → 302/重定向到 /sz/
-- [ ] /sz/ 与 /sz-cfg/ 顶栏互链；主题跟随系统且可覆盖
-- [ ] 选择 course 后上传 PDF/TXT/MD，列表刷新
-- [ ] 问答 SSE 流式输出；citations 可展开；KaTeX 公式正确
-- [ ] grounded: false 拒答态
+- [ ] /sz/ · /sz-docs/ · /sz-cfg/ 顶栏互链；主题跟随系统且可覆盖
+- [ ] 对话页：新对话 / 历史切换 / 删除；问答 SSE + citations + KaTeX
+- [ ] 资料页：选课 → 上传 → 列表 → 扫描
+- [ ] grounded: false 拒答态（样式提示即可，无「有据可查」徽章）
 - [ ] /sz-cfg/ 各组保存成功；密钥不回明文；env 不可写时有提示
 - [ ] ≤768px 无横向撑破、分区仍可独立滚动
 ```

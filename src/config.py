@@ -13,6 +13,29 @@ if ENV_PATH.exists():
     load_dotenv(ENV_PATH)
 
 
+def _env_flag(name: str) -> bool | None:
+    """读布尔环境变量；未设置返回 None。"""
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    text = raw.strip().lower()
+    if text == "":
+        return None
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    return None
+
+
+def _proxy_enabled_default() -> bool:
+    """PROXY_ENABLED 显式优先；未写时兼容旧行为：有 PROXY_URL 即启用。"""
+    flag = _env_flag("PROXY_ENABLED")
+    if flag is not None:
+        return flag
+    return bool(os.getenv("PROXY_URL", "").strip())
+
+
 @dataclass
 class ProxyConfig:
     """出站 HTTP 代理。PROXY_URL 同时用于 HTTP/HTTPS（LLM、Embedding、Hugging Face 下载）。"""
@@ -21,10 +44,11 @@ class ProxyConfig:
     no_proxy: str = field(
         default_factory=lambda: os.getenv("NO_PROXY", "127.0.0.1,localhost").strip()
     )
+    enabled: bool = field(default_factory=_proxy_enabled_default)
 
     @property
-    def enabled(self) -> bool:
-        return bool(self.url)
+    def active_url(self) -> str:
+        return self.url if self.enabled and self.url else ""
 
 
 @dataclass
@@ -79,7 +103,7 @@ class ChunkConfig:
 
 @dataclass
 class RetrievalConfig:
-    top_k: int = field(default_factory=lambda: int(os.getenv("RETRIEVAL_TOP_K", "20")))
+    top_k: int = field(default_factory=lambda: int(os.getenv("RETRIEVAL_TOP_K", "5")))
     score_threshold: float = field(
         default_factory=lambda: float(os.getenv("RETRIEVAL_SCORE_THRESHOLD", "0.25"))
     )
@@ -103,6 +127,10 @@ class ParsingConfig:
 @dataclass
 class AppConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
+    # 注册表活跃名，对应 data/llm_providers.json
+    llm_provider: str = field(
+        default_factory=lambda: os.getenv("LLM_PROVIDER", "").strip()
+    )
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
@@ -110,6 +138,9 @@ class AppConfig:
     parsing: ParsingConfig = field(default_factory=ParsingConfig)
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
     debug: bool = field(default_factory=lambda: os.getenv("DEBUG", "false").lower() == "true")
+    log_level: str = field(
+        default_factory=lambda: os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO"
+    )
     api_v1_prefix: str = field(default_factory=lambda: os.getenv("API_V1_PREFIX", "/api/v1"))
     max_upload_mb: int = field(default_factory=lambda: int(os.getenv("MAX_UPLOAD_MB", "50")))
     host: str = field(default_factory=lambda: os.getenv("HOST", "127.0.0.1"))
@@ -123,12 +154,22 @@ class AppConfig:
             raise ValueError(
                 f"EMBEDDING_PROVIDER 无效: {self.embedding.provider!r}，可选 local / openai"
             )
+        level = self.log_level.strip().upper()
+        if level not in ("DEBUG", "INFO", "WARNING", "ERROR"):
+            raise ValueError(
+                f"LOG_LEVEL 无效: {self.log_level!r}，可选 DEBUG / INFO / WARNING / ERROR"
+            )
+        self.log_level = level
         if self.chunk.chunk_size <= 0:
             raise ValueError("chunk_size 必须大于 0")
         if self.chunk.chunk_overlap >= self.chunk.chunk_size:
             raise ValueError("chunk_overlap 必须小于 chunk_size")
         if self.max_upload_mb <= 0:
             raise ValueError("max_upload_mb 必须大于 0")
+        if self.retrieval.top_k <= 0:
+            raise ValueError("top_k 必须大于 0")
+        if not (0 <= self.retrieval.score_threshold <= 1):
+            raise ValueError("score_threshold 须在 0～1")
 
 
 config = AppConfig()
@@ -141,6 +182,7 @@ apply_proxy_env(config.proxy)
 def reload_config() -> AppConfig:
     """重新加载 .env 并刷新全局 config（保持 import 引用有效）。"""
     from src.services.env_store import ENV_PATH as env_path
+    from src.utils.logging import apply_log_level
 
     load_dotenv(env_path, override=True)
     fresh = AppConfig()
@@ -148,4 +190,5 @@ def reload_config() -> AppConfig:
     for name in config.__dataclass_fields__:
         setattr(config, name, getattr(fresh, name))
     apply_proxy_env(config.proxy)
+    apply_log_level(config.log_level)
     return config

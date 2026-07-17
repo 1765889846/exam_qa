@@ -1,4 +1,4 @@
-"""GET/PATCH /api/v1/config — 工作台配置读写。"""
+"""GET/PATCH /api/v1/config — 设置页配置读写。"""
 
 from __future__ import annotations
 
@@ -29,10 +29,16 @@ def _config_path_label() -> str:
 
 
 def _build_config_data(request: Request) -> dict:
+    from src.services import llm_providers as llm_reg
+
     emb = config.embedding
     llm = config.llm
+    providers = llm_reg.list_public()
     return {
         "llm": {
+            "active": providers.get("active") or config.llm_provider,
+            "providers": providers.get("items") or [],
+            "formats": providers.get("formats") or [],
             "model": llm.model,
             "base_url": llm.base_url,
             "timeout": llm.timeout,
@@ -69,6 +75,7 @@ def _build_config_data(request: Request) -> dict:
         "app": {
             "max_upload_mb": config.max_upload_mb,
             "debug": config.debug,
+            "log_level": config.log_level,
         },
         "proxy": {
             "url": config.proxy.url,
@@ -80,7 +87,7 @@ def _build_config_data(request: Request) -> dict:
             "env_writable": env_file_writable(),
         },
         "health": {
-            "llm": getattr(request.app.state, "llm_health", "unavailable"),
+            "llm": "ok" if config.llm.api_key else "unavailable",
             "embedding": getattr(request.app.state, "embedding_health", "not_ready"),
         },
     }
@@ -101,6 +108,13 @@ def _patch_to_env(body: ConfigUpdateRequest) -> tuple[dict[str, str], list[str]]
             updates["LLM_MODEL"] = p["model"].strip()
         if "timeout" in p:
             updates["LLM_TIMEOUT"] = str(p["timeout"])
+        from src.services import llm_providers as llm_reg
+
+        llm_reg.sync_active_fields_from_patch(
+            model=p.get("model"),
+            base_url=p.get("base_url"),
+            api_key=p.get("api_key") if p.get("api_key") != MASKED_SECRET else None,
+        )
 
     if body.embedding is not None:
         patched.append("embedding")
@@ -153,6 +167,8 @@ def _patch_to_env(body: ConfigUpdateRequest) -> tuple[dict[str, str], list[str]]
         p = body.app.model_dump(exclude_none=True)
         if "max_upload_mb" in p:
             updates["MAX_UPLOAD_MB"] = str(p["max_upload_mb"])
+        if "log_level" in p:
+            updates["LOG_LEVEL"] = str(p["log_level"]).strip().upper()
 
     if body.server is not None:
         patched.append("server")
@@ -172,6 +188,8 @@ def _patch_to_env(body: ConfigUpdateRequest) -> tuple[dict[str, str], list[str]]
             updates["PROXY_URL"] = p["url"].strip()
         if "no_proxy" in p:
             updates["NO_PROXY"] = p["no_proxy"].strip()
+        if "enabled" in p:
+            updates["PROXY_ENABLED"] = "true" if p["enabled"] else "false"
 
     return updates, patched
 
