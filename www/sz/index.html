@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>溯知 · 工作台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../shared/css/tokens.css" />
+    <link rel="stylesheet" href="../shared/css/shell.css" />
+    <link rel="stylesheet" href="./css/workbench.css" />
+  </head>
+  <body>
+    <div data-sz-shell></div>
+    <main class="sz-workbench">
+      <section class="sz-panel sz-docs" id="sz-docs-panel">
+        <div class="sz-docs-upload" id="sz-upload-zone">上传区</div>
+        <div class="sz-docs-list" id="sz-docs-list"></div>
+      </section>
+      <section class="sz-panel sz-ask" id="sz-ask-panel">
+        <div class="sz-ask-stream" id="sz-ask-stream"></div>
+        <form class="sz-ask-composer" id="sz-ask-form">
+          <textarea id="sz-ask-input" rows="2" placeholder="输入问题…"></textarea>
+          <button type="submit">提问</button>
+        </form>
+      </section>
+    </main>
+    <script type="module" src="./js/workbench.js"></script>
+  </body>
+</html>

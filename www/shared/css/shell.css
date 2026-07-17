@@ -1,0 +1,130 @@
+html,
+body {
+  margin: 0;
+  background: var(--sz-bg-base);
+  color: var(--sz-text);
+  font-family: var(--sz-font);
+}
+
+.sz-topbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.65rem 1rem;
+  background: var(--sz-bg-panel);
+  border-bottom: 1px solid var(--sz-border);
+}
+
+.sz-brand {
+  font-weight: 700;
+  font-size: 1.15rem;
+  color: var(--sz-accent);
+  text-decoration: none;
+  letter-spacing: 0.02em;
+}
+
+.sz-nav {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.sz-nav a {
+  color: var(--sz-text-muted);
+  text-decoration: none;
+  padding: 0.35rem 0.6rem;
+  border-radius: var(--sz-radius-sm);
+}
+
+.sz-nav a:hover {
+  color: var(--sz-text);
+  background: var(--sz-bg-surface);
+}
+
+.sz-nav a.is-active {
+  color: var(--sz-text);
+  font-weight: 600;
+  background: var(--sz-bg-surface);
+}
+
+.sz-topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sz-topbar-right select,
+.sz-topbar-right button {
+  font-family: inherit;
+  font-size: 0.875rem;
+  color: var(--sz-text);
+  background: var(--sz-bg-surface);
+  border: 1px solid var(--sz-border);
+  border-radius: var(--sz-radius-sm);
+  padding: 0.3rem 0.5rem;
+}
+
+.sz-topbar-right button {
+  cursor: pointer;
+}
+
+.sz-topbar-right button:hover {
+  border-color: var(--sz-accent);
+}
+
+.sz-health {
+  font-size: 0.75rem;
+  line-height: 1;
+  color: var(--sz-text-muted);
+}
+
+.sz-health[data-state="ok"] {
+  color: var(--sz-success);
+}
+
+.sz-health[data-state="degraded"] {
+  color: #d4a017;
+}
+
+.sz-health[data-state="down"] {
+  color: var(--sz-danger);
+}
+
+.sz-toast {
+  position: fixed;
+  bottom: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  max-width: min(28rem, calc(100vw - 2rem));
+  padding: 0.65rem 1rem;
+  border-radius: var(--sz-radius-md);
+  background: var(--sz-bg-panel);
+  border: 1px solid var(--sz-border);
+  color: var(--sz-text);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.sz-toast[data-kind="error"] {
+  border-color: var(--sz-danger);
+  color: var(--sz-danger);
+}
+
+.sz-toast[data-kind="success"] {
+  border-color: var(--sz-success);
+}
+
+@media (max-width: 768px) {
+  .sz-nav-more {
+    display: none;
+  }
+
+  .sz-topbar {
+    flex-wrap: wrap;
+  }
+
+  .sz-topbar-right {
+    margin-left: 0;
+    width: 100%;
+  }
+}

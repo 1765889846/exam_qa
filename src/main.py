@@ -230,12 +230,17 @@ async def root():
     return RedirectResponse(url=_root_redirect_url())
 
 
+# ../shared from /sz| /sz-cfg resolves to /shared — must mount for CSS/JS modules
+_shared_dir = _WWW_DIR / "shared"
+if _shared_dir.is_dir():
+    app.mount("/shared", StaticFiles(directory=str(_shared_dir)), name="shared")
+
 _sz_dir = _WWW_DIR / "sz"
-if _sz_dir.is_dir():
+if (_sz_dir / "index.html").is_file():
     app.mount("/sz", StaticFiles(directory=str(_sz_dir), html=True), name="sz")
 
 _sz_cfg_dir = _WWW_DIR / "sz-cfg"
-if _sz_cfg_dir.is_dir():
+if (_sz_cfg_dir / "index.html").is_file():
     app.mount(
         "/sz-cfg", StaticFiles(directory=str(_sz_cfg_dir), html=True), name="sz-cfg"
     )
