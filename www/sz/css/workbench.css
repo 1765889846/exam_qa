@@ -194,6 +194,28 @@
   font-weight: 600;
   color: var(--sz-text);
   white-space: pre-wrap;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 0.6rem;
+}
+
+.sz-q-mode {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--sz-accent);
+  border: 1px solid var(--sz-border);
+  border-radius: var(--sz-radius-sm);
+  padding: 0.1rem 0.4rem;
+  background: var(--sz-bg-surface);
+}
+
+.sz-q-text {
+  flex: 1 1 12rem;
+  min-width: 0;
+  white-space: pre-wrap;
 }
 
 .sz-a {
@@ -260,9 +282,23 @@
   z-index: 1;
   display: flex;
   gap: 0.5rem;
+  align-items: flex-end;
   padding: 0.75rem 1rem;
   border-top: 1px solid var(--sz-border);
   background: var(--sz-bg-surface);
+}
+
+.sz-ask-composer select {
+  flex: 0 0 auto;
+  font-family: var(--sz-font-ui);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--sz-text);
+  background: var(--sz-bg-panel);
+  border: 1px solid var(--sz-border);
+  border-radius: var(--sz-radius-lg);
+  padding: 0.55rem 0.65rem;
+  height: 2.6rem;
 }
 
 .sz-ask-composer textarea {

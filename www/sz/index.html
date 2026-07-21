@@ -58,8 +58,12 @@
         </button>
         <div class="sz-ask-stream" id="sz-ask-stream"></div>
         <form class="sz-ask-composer" id="sz-ask-form">
+          <select id="sz-ask-mode" aria-label="问答模式">
+            <option value="qa">自由问答</option>
+            <option value="concept">知识点</option>
+          </select>
           <textarea id="sz-ask-input" rows="2" placeholder="输入问题…"></textarea>
-          <button type="submit">提问</button>
+          <button type="submit" id="sz-ask-submit">提问</button>
         </form>
       </section>
     </main>

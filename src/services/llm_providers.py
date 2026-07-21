@@ -14,7 +14,9 @@ from src.services.env_store import PROJECT_ROOT, write_env_updates
 logger = logging.getLogger(__name__)
 
 STORE_PATH = PROJECT_ROOT / "data" / "llm_providers.json"
+# openai-compatible 写入时归一为 openai；对外只暴露规范值
 FORMATS = frozenset({"openai", "openai-compatible", "local"})
+CANONICAL_FORMATS = ("openai", "local")
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
@@ -38,7 +40,7 @@ def _validate(item: dict[str, str], *, require_key: bool = True) -> None:
             "name 须为字母数字开头，可含 ._- ，最长 64（如 deepseek、qwen-local）"
         )
     if item["format"] not in ("openai", "local"):
-        raise BadRequestException("format 可选 openai / openai-compatible / local")
+        raise BadRequestException("format 可选 openai / local（openai-compatible 等同 openai）")
     if not item["model"]:
         raise BadRequestException("model 不能为空")
     if item["format"] != "local" and require_key and not item["api_key"]:
@@ -123,7 +125,7 @@ def list_public() -> dict[str, Any]:
     return {
         "items": [public_info(p, active) for p in items],
         "active": active,
-        "formats": sorted(FORMATS),
+        "formats": list(CANONICAL_FORMATS),
     }
 
 

@@ -66,7 +66,7 @@
 | 健康 | `GET /api/v1/health` → 顶栏状态点 |
 | 目录 | `GET /api/v1/colleges`、`GET /api/v1/courses`；`course_id` 必填并持久化 `sz.course_id` |
 | 资料 | `POST/GET/DELETE /api/v1/documents`、`POST /api/v1/documents/scan` |
-| 问答 | `POST /api/v1/ask`（`stream=true` → SSE）；展示 citations、KaTeX（拒答仍看 `grounded`，不展示徽章） |
+| 问答 | `POST /api/v1/ask`（`mode=qa|concept`；`stream=true` → SSE）；展示 citations、KaTeX（拒答看 `grounded`） |
 | 配置 | `GET/PATCH /api/v1/config`；LLM 注册/切换：`/api/v1/llm-providers` |
 
 ### 2.3 启动
@@ -116,16 +116,18 @@ uv run exam
 
 - 左：会话历史（新对话 / 切换 / 删除；`localStorage` 按 `course_id` 隔离）
 - 右：回答区（独立滚动，KaTeX + citations）+ 输入区（底部固定）
+- 输入区含 **模式** `qa`（自由问答）/ `concept`（知识点，定义→公式→例题）；持久化 `sz.ask_mode`
 - 分区各自 `overflow`，互不带动整页滚动
 
 **资料 `/sz-docs`**
 
-- 上传区（进度条）+ 文档列表（独立滚动）+ 删除 / 扫描
+- 上传区（进度条；接受 PDF/TXT/MD/DOC/DOCX/**PPTX**）+ 文档列表（独立滚动）+ 删除 / 扫描
 
 **设置 `/sz-cfg`**
 
 - 左：配置分组列表（可搜索，独立滚动）
 - 右：当前分组表单 + 保存 / 重置（独立滚动）
+- **模型管理**：表格式注册表（名称 / 格式 / 模型 / Base URL / Key / 操作）+ 信息条 +「+ 添加模型」折叠表单；控件统一 `border-radius: var(--sz-radius-md)`（约 12px），徽章圆角 pill；色系仍用溯知青绿 tokens，不引入 Ant Design / React
 
 ---
 
@@ -157,7 +159,7 @@ exam/
 | URL 挂载 | 产品前缀短码 | `/sz`、`/sz-docs`、`/sz-cfg` |
 | 目录 | 与挂载同名 | `www/sz/`、`www/sz-docs/` |
 | CSS 类 | `sz-*` | `sz-shell`、`sz-panel`、`sz-config-list` |
-| localStorage | `sz.*` | `sz.theme`、`sz.course_id`、`sz.conversations.{courseId}` |
+| localStorage | `sz.*` | `sz.theme`、`sz.course_id`、`sz.ask_mode`、`sz.conversations.{courseId}` |
 | 后端 API | 不变 | `/api/v1/*` |
 
 禁止再用已删除的 `workbench/`（React）路径与 `pnpm` 工作区约定。
@@ -179,9 +181,9 @@ exam/
 
 | 分组 | 字段来源 |
 |---|---|
-| LLM | 注册表选择/增删（`llm-providers`）+ timeout；活跃项同步写入 `.env` 的 `LLM_*` / `LLM_PROVIDER` |
+| 模型管理 | 表格式注册表增删/切换（`llm-providers`）+ timeout；活跃项同步写入 `.env` 的 `LLM_*` / `LLM_PROVIDER` |
 | Embedding | provider、model、base_url、api_key、timeout |
-| 检索 | top_k、score_threshold |
+| 检索 | top_k、score_threshold（后端固定混合检索：向量 + BM25 → RRF） |
 | 分块 | chunk_size、chunk_overlap |
 | 解析 / OCR | pdf_use_ocr、pdf_force_ocr、pdf_ocr_language |
 | 代理 | url、no_proxy、**enabled**（可写；关闭后仍保留 URL，出站直连） |
@@ -253,8 +255,8 @@ exam/
 ```
 - [ ] GET / → 302/重定向到 /sz/
 - [ ] /sz/ · /sz-docs/ · /sz-cfg/ 顶栏互链；主题跟随系统且可覆盖
-- [ ] 对话页：新对话 / 历史切换 / 删除；问答 SSE + citations + KaTeX
-- [ ] 资料页：选课 → 上传 → 列表 → 扫描
+- [ ] 对话页：新对话 / 历史切换 / 删除；`mode=qa|concept`；问答 SSE + citations + KaTeX
+- [ ] 资料页：选课 → 上传（含 PPTX）→ 列表 → 扫描
 - [ ] grounded: false 拒答态（样式提示即可，无「有据可查」徽章）
 - [ ] /sz-cfg/ 各组保存成功；密钥不回明文；env 不可写时有提示
 - [ ] ≤768px 无横向撑破、分区仍可独立滚动

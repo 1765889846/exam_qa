@@ -24,7 +24,6 @@ function uid() {
   return `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** 用首问生成侧栏标题（与内容相关，非占位「新对话」）。 */
 export function titleFromQuestion(question) {
   const raw = String(question || "")
     .replace(/\s+/g, " ")
@@ -35,7 +34,6 @@ export function titleFromQuestion(question) {
   const text = cleaned || first;
   return text.length > 36 ? `${text.slice(0, 36)}…` : text;
 }
-
 export function listConversations(courseId) {
   const list = readAll(courseId);
   let dirty = false;
@@ -111,6 +109,7 @@ export function appendTurn(courseId, turn) {
     answer: turn.answer || "",
     citations: turn.citations || [],
     grounded: turn.grounded !== false,
+    mode: turn.mode === "concept" ? "concept" : "qa",
   });
   if (q && (conv.turns.length === 1 || !conv.title || conv.title === "新对话")) {
     conv.title = titleFromQuestion(q);

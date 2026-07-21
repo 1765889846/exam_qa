@@ -20,7 +20,7 @@ class AnswerData(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=1, description="问题内容不能为空")
     course_id: str = Field(..., min_length=1, description="课程 ID，检索隔离必填")
-    mode: Literal["qa"] = "qa"
+    mode: Literal["qa", "concept"] = "qa"
     stream: bool = False
 
 

@@ -241,6 +241,48 @@ class ChromaVectorStore:
             ) from e
         return len(ids)
 
+    def get_by_course_id(self, course_id: str) -> list[dict]:
+        """按 course_id 取出全部 chunk（供 BM25 建索引）。禁止无 filter。"""
+        if not course_id:
+            raise ValueError("get_by_course_id 必须提供 course_id")
+        if self._collection.count() == 0:
+            return []
+        try:
+            results = self._collection.get(
+                where={"course_id": course_id},
+                include=["documents", "metadatas"],
+            )
+        except Exception as e:
+            logger.error("按 course_id 读取向量失败: %s", e)
+            raise ServiceUnavailableException(
+                "向量读取失败", detail=str(e)
+            ) from e
+
+        ids = results.get("ids") or []
+        documents = results.get("documents") or []
+        metadatas = results.get("metadatas") or []
+        hits: list[dict] = []
+        for i, chunk_id in enumerate(ids):
+            meta = (metadatas[i] if i < len(metadatas) else None) or {}
+            page = meta.get("page")
+            if page == -1:
+                page = None
+            hits.append({
+                "id": chunk_id,
+                "text": documents[i] if i < len(documents) else "",
+                "score": 0.0,
+                "metadata": {
+                    "doc_id": meta.get("doc_id", ""),
+                    "source_file": meta.get("source_file", ""),
+                    "chunk_index": meta.get("chunk_index", 0),
+                    "course": meta.get("course", ""),
+                    "course_id": meta.get("course_id", ""),
+                    "college_id": meta.get("college_id", ""),
+                    "page": page,
+                },
+            })
+        return hits
+
     def delete_by_doc_id(self, doc_id: str) -> None:
         try:
             self._collection.delete(where={"doc_id": doc_id})

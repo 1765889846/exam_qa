@@ -1,8 +1,11 @@
-"""检索：向量相似度搜索，按 course_id 过滤。"""
+"""检索：向量 + BM25（按 course_id）→ RRF → 阈值过滤。"""
 
 from __future__ import annotations
 
 import logging
+import math
+import re
+from collections import Counter
 from functools import lru_cache
 
 from src.config import config
@@ -11,6 +14,10 @@ from src.services.embedding import get_embedding_client
 from src.services.storage.vector_store import ChromaVectorStore
 
 logger = logging.getLogger(__name__)
+
+RRF_K = 60
+# ponytail: 无 jieba；CJK 字+二元组+英文词
+_TOKEN_RE = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]+", re.IGNORECASE)
 
 
 @lru_cache(maxsize=256)
@@ -28,6 +35,96 @@ def clear_query_embed_cache() -> None:
     _cached_query_vec.cache_clear()
 
 
+def tokenize(text: str) -> list[str]:
+    tokens: list[str] = []
+    for m in _TOKEN_RE.finditer(text.lower()):
+        s = m.group()
+        if s.isascii():
+            tokens.append(s)
+            continue
+        tokens.extend(s)
+        tokens.extend(s[i : i + 2] for i in range(len(s) - 1))
+    return tokens
+
+
+class _BM25:
+    def __init__(self, corpus_tokens: list[list[str]], k1: float = 1.5, b: float = 0.75):
+        self.k1 = k1
+        self.b = b
+        self.corpus_tokens = corpus_tokens
+        self.n = len(corpus_tokens)
+        self.doc_len = [len(t) for t in corpus_tokens]
+        self.avgdl = (sum(self.doc_len) / self.n) if self.n else 0.0
+        df: Counter[str] = Counter()
+        for toks in corpus_tokens:
+            df.update(set(toks))
+        self.idf = {
+            t: math.log(1 + (self.n - f + 0.5) / (f + 0.5)) for t, f in df.items()
+        }
+
+    def scores(self, query_tokens: list[str]) -> list[float]:
+        if not self.n or not query_tokens:
+            return [0.0] * self.n
+        out: list[float] = []
+        for i, toks in enumerate(self.corpus_tokens):
+            tf = Counter(toks)
+            dl = self.doc_len[i]
+            s = 0.0
+            for q in query_tokens:
+                if q not in tf:
+                    continue
+                freq = tf[q]
+                denom = freq + self.k1 * (1 - self.b + self.b * dl / (self.avgdl or 1.0))
+                s += self.idf.get(q, 0.0) * (freq * (self.k1 + 1)) / denom
+            out.append(s)
+        return out
+
+
+def rrf_fuse(*ranked_lists: list[dict], k: int = RRF_K, top_k: int) -> list[dict]:
+    scores: dict[str, float] = {}
+    best: dict[str, dict] = {}
+    for ranked in ranked_lists:
+        for rank, hit in enumerate(ranked, start=1):
+            cid = hit["id"]
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+            prev = best.get(cid)
+            if prev is None or hit.get("score", 0) > prev.get("score", 0):
+                best[cid] = hit
+    return [
+        best[cid]
+        for cid, _ in sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+    ]
+
+
+def _vector_search(query: str, vs: ChromaVectorStore, course_id: str, top_k: int) -> list[dict]:
+    try:
+        query_vec = list(_cached_query_vec(_embed_cache_key(), query))
+    except Exception as e:
+        logger.error("检索向量化失败: %s", e)
+        raise ServiceUnavailableException("向量化服务不可用", detail=str(e)) from e
+    return vs.search(query_vec, top_k=top_k, course_id=course_id)
+
+
+def _bm25_search(query: str, vs: ChromaVectorStore, course_id: str, top_k: int) -> list[dict]:
+    corpus = vs.get_by_course_id(course_id)
+    if not corpus:
+        return []
+    q_tokens = tokenize(query)
+    if not q_tokens:
+        return []
+    raw = _BM25([tokenize(c.get("text", "")) for c in corpus]).scores(q_tokens)
+    max_s = max(raw) if raw else 0.0
+    ranked = sorted(range(len(raw)), key=lambda i: raw[i], reverse=True)
+    hits: list[dict] = []
+    for i in ranked:
+        if raw[i] <= 0 or len(hits) >= top_k:
+            break
+        hit = dict(corpus[i])
+        hit["score"] = (raw[i] / max_s) if max_s > 0 else 0.0
+        hits.append(hit)
+    return hits
+
+
 def retrieve(
     query: str,
     vs: ChromaVectorStore,
@@ -36,7 +133,6 @@ def retrieve(
     *,
     score_threshold: float | None = None,
 ) -> list[dict]:
-    """按课程过滤，取相似度最高的 top_k 条，再按阈值过滤。"""
     if top_k is None:
         top_k = config.retrieval.top_k
     if score_threshold is None:
@@ -46,27 +142,22 @@ def retrieve(
 
     q = query.strip()
     if not q:
-        logger.warning("检索 query 为空")
         return []
     if not course_id or not course_id.strip():
         raise BadRequestException("course_id 不能为空")
 
-    try:
-        query_vec = list(_cached_query_vec(_embed_cache_key(), q))
-    except Exception as e:
-        logger.error("检索向量化失败: %s", e)
-        raise ServiceUnavailableException("向量化服务不可用", detail=str(e)) from e
-
-    results = vs.search(query_vec, top_k=top_k, course_id=course_id)
-    kept = [h for h in results if h.get("score", 0) >= score_threshold]
+    pool = top_k * 2
+    vec_hits = _vector_search(q, vs, course_id, pool)
+    bm25_hits = _bm25_search(q, vs, course_id, pool)
+    fused = rrf_fuse(vec_hits, bm25_hits, top_k=top_k) if (vec_hits or bm25_hits) else []
+    kept = [h for h in fused if h.get("score", 0) >= score_threshold]
 
     logger.info(
-        "检索完成: course_id=%s query='%s...' top_k=%d hits=%d kept=%d threshold=%.2f",
+        "混合检索: course=%s top_k=%d vec=%d bm25=%d kept=%d",
         course_id,
-        q[:40],
         top_k,
-        len(results),
+        len(vec_hits),
+        len(bm25_hits),
         len(kept),
-        score_threshold,
     )
     return kept

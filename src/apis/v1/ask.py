@@ -37,7 +37,6 @@ async def ask_question(
     catalog: CatalogStore = Depends(get_catalog_store),
     _user=Depends(get_current_user),
 ):
-    """问答。stream=true 时返回 SSE。"""
     catalog.require_course(body.course_id)
 
     if body.stream:

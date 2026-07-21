@@ -1,8 +1,4 @@
-"""文档解析：PDF / Office / 纯文本 → 带页码的结构化文本。
-
-PDF 优先 pymupdf4llm（Markdown + 表格 + 标题层级 + 自动/强制 OCR），失败回退 PyMuPDF。
-.doc（旧 Word）优先 LibreOffice 转 docx，再 python-docx 解析。
-"""
+"""文档解析：PDF / Office / 纯文本 → ParsedDocument。"""
 
 from __future__ import annotations
 
@@ -24,7 +20,7 @@ SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md", ".doc", ".docx", ".pptx"}
 
 @dataclass
 class ParsedPage:
-    page: int | None  # PDF/PPT 为 1-based 页码，txt/md/docx 为 None
+    page: int | None  # PDF/PPT 1-based；纯文本/docx 为 None
     text: str
 
 
@@ -51,14 +47,11 @@ def _pages_from_pymupdf4llm(raw) -> ParsedDocument | None:
     if isinstance(raw, str):
         text = raw.strip()
         return ParsedDocument([ParsedPage(page=None, text=text)]) if text else None
-
-    pages: list[ParsedPage] = []
+    pages = []
     for chunk in raw:
         text = (chunk.get("text") or "").strip()
-        if not text:
-            continue
-        meta = chunk.get("metadata") or {}
-        pages.append(ParsedPage(page=_page_num(meta), text=text))
+        if text:
+            pages.append(ParsedPage(page=_page_num(chunk.get("metadata") or {}), text=text))
     return ParsedDocument(pages) if pages else None
 
 
@@ -75,62 +68,63 @@ def _pymupdf4llm_kwargs(*, force_ocr: bool | None = None) -> dict:
 def _parse_pdf_pymupdf4llm(path: str, *, force_ocr: bool | None = None) -> ParsedDocument | None:
     import pymupdf4llm
 
-    raw = pymupdf4llm.to_markdown(path, **_pymupdf4llm_kwargs(force_ocr=force_ocr))
-    return _pages_from_pymupdf4llm(raw)
+    return _pages_from_pymupdf4llm(
+        pymupdf4llm.to_markdown(path, **_pymupdf4llm_kwargs(force_ocr=force_ocr))
+    )
 
 
 def _parse_pdf_fitz(path: str) -> ParsedDocument:
     import fitz
 
     doc = fitz.open(path)
-    pages = []
-    for i, page in enumerate(doc, 1):
-        text = page.get_text().strip()
-        if text:
-            pages.append(ParsedPage(page=i, text=text))
-    doc.close()
-    return ParsedDocument(pages)
+    try:
+        pages = [
+            ParsedPage(page=i, text=t)
+            for i, page in enumerate(doc, 1)
+            if (t := page.get_text().strip())
+        ]
+        return ParsedDocument(pages)
+    finally:
+        doc.close()
 
 
 def _parse_pdf(path: str) -> ParsedDocument:
-    """PDF：pymupdf4llm 按页 Markdown；无文本层时自动 OCR 重试。"""
     p = config.parsing
     try:
         doc = _parse_pdf_pymupdf4llm(path)
         if doc and doc.full_text.strip():
             return doc
-
         if p.pdf_use_ocr and not p.pdf_force_ocr:
-            logger.info("PDF 文本层为空或不足，启用 OCR 重试: %s", Path(path).name)
+            logger.info("PDF 空文本，OCR 重试: %s", Path(path).name)
             doc = _parse_pdf_pymupdf4llm(path, force_ocr=True)
             if doc and doc.full_text.strip():
                 return doc
     except Exception as e:
-        logger.warning("pymupdf4llm 解析失败，回退 PyMuPDF 纯文本: %s", e)
+        logger.warning("pymupdf4llm 失败，回退 fitz: %s", e)
 
     doc = _parse_pdf_fitz(path)
     if doc.full_text.strip():
         return doc
 
     if p.pdf_use_ocr and not p.pdf_force_ocr:
-        logger.info("PyMuPDF 纯文本为空，最后尝试 force_ocr: %s", Path(path).name)
         try:
-            doc = _parse_pdf_pymupdf4llm(path, force_ocr=True)
-            if doc and doc.full_text.strip():
-                return doc
+            ocr = _parse_pdf_pymupdf4llm(path, force_ocr=True)
+            if ocr and ocr.full_text.strip():
+                return ocr
         except Exception as e:
-            logger.warning("PDF OCR 重试失败: %s", e)
-
+            logger.warning("PDF OCR 失败: %s", e)
     return doc
 
 
 def _parse_txt(path: str) -> str:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    except UnicodeDecodeError:
-        with open(path, "r", encoding="gbk") as f:
-            return f.read()
+    data = Path(path).read_bytes()
+    for enc in ("utf-8-sig", "utf-8", "gbk"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    # ponytail: 怪编码替换非法字节，不阻断
+    return data.decode("utf-8", errors="replace")
 
 
 def _parse_plain(path: str) -> ParsedDocument:
@@ -138,32 +132,94 @@ def _parse_plain(path: str) -> ParsedDocument:
     return ParsedDocument([ParsedPage(page=None, text=text)] if text else [])
 
 
+def _table_to_text(table) -> str:
+    rows: list[str] = []
+    for row in table.rows:
+        seen: set[int] = set()
+        cells: list[str] = []
+        for cell in row.cells:
+            key = id(cell._tc)
+            if key in seen:
+                continue
+            seen.add(key)
+            if t := cell.text.strip():
+                cells.append(t)
+            for nested in cell.tables:
+                if nt := _table_to_text(nested):
+                    cells.append(nt)
+        if cells:
+            rows.append(" | ".join(cells))
+    return "\n".join(rows)
+
+
+def _iter_block_items(parent):
+    from docx.document import Document as DocxDocument
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    body = parent.element.body if isinstance(parent, DocxDocument) else parent._element
+    for child in body.iterchildren():
+        if child.tag == qn("w:p"):
+            yield Paragraph(child, parent)
+        elif child.tag == qn("w:tbl"):
+            yield Table(child, parent)
+
+
+def _story_parts(container) -> list[str]:
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    parts: list[str] = []
+    for block in _iter_block_items(container):
+        if isinstance(block, Paragraph):
+            if t := (block.text or "").strip():
+                parts.append(t)
+        elif isinstance(block, Table):
+            if t := _table_to_text(block):
+                parts.append(t)
+    return parts
+
+
+def _header_footer_parts(doc) -> list[str]:
+    # 单节异常跳过，避免整份 docx 失败
+    seen: set[str] = set()
+    out: list[str] = []
+    for section in doc.sections:
+        for part in (section.header, section.footer):
+            try:
+                block = "\n".join(_story_parts(part)).strip()
+            except Exception:
+                continue
+            if block and block not in seen:
+                seen.add(block)
+                out.append(block)
+    return out
+
+
+def _textbox_parts(doc) -> list[str]:
+    from docx.oxml.ns import qn
+
+    parts: list[str] = []
+    for txbx in doc.element.body.iter(qn("w:txbxContent")):
+        texts = [(n.text or "").strip() for n in txbx.iter(qn("w:t")) if (n.text or "").strip()]
+        if texts:
+            parts.append("\n".join(texts))
+    return parts
+
+
 def _parse_docx(path: str) -> ParsedDocument:
     from docx import Document
 
     doc = Document(path)
-    parts: list[str] = []
-    for para in doc.paragraphs:
-        t = para.text.strip()
-        if t:
-            parts.append(t)
-    for table in doc.tables:
-        rows = []
-        for row in table.rows:
-            cells = [c.text.strip() for c in row.cells if c.text.strip()]
-            if cells:
-                rows.append(" | ".join(cells))
-        if rows:
-            parts.append("\n".join(rows))
+    parts = _header_footer_parts(doc) + _story_parts(doc) + _textbox_parts(doc)
     text = "\n\n".join(parts)
     return ParsedDocument([ParsedPage(page=None, text=text)] if text else [])
 
 
 def _find_soffice() -> str | None:
-    """查找 LibreOffice soffice，用于 .doc → .docx 转换。"""
     for name in ("soffice", "libreoffice"):
-        found = shutil.which(name)
-        if found:
+        if found := shutil.which(name):
             return found
     if os.name == "nt":
         for pattern in (
@@ -176,12 +232,12 @@ def _find_soffice() -> str | None:
 
 
 def _convert_doc_to_docx(path: str) -> Path | None:
-    """LibreOffice headless 将 .doc 转为临时 .docx。"""
     soffice = _find_soffice()
     if not soffice:
         return None
 
     out_dir = Path(tempfile.mkdtemp(prefix="exam_doc_"))
+    dest: Path | None = None
     try:
         subprocess.run(
             [soffice, "--headless", "--convert-to", "docx", "--outdir", str(out_dir), path],
@@ -192,43 +248,64 @@ def _convert_doc_to_docx(path: str) -> Path | None:
         converted = out_dir / f"{Path(path).stem}.docx"
         if not converted.is_file():
             return None
-        dest = Path(tempfile.mktemp(suffix=".docx", prefix="exam_doc_"))
+        fd, dest_name = tempfile.mkstemp(suffix=".docx", prefix="exam_doc_")
+        os.close(fd)
+        dest = Path(dest_name)
         shutil.copy2(converted, dest)
         return dest
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
-        logger.warning("LibreOffice 转换 .doc 失败: %s", e)
+        logger.warning("LibreOffice 转换失败: %s", e)
+        if dest is not None:
+            dest.unlink(missing_ok=True)
         return None
     finally:
         shutil.rmtree(out_dir, ignore_errors=True)
 
 
 def _parse_doc(path: str) -> ParsedDocument:
-    """旧版 .doc：LibreOffice 转 docx 后解析。"""
     docx_tmp = _convert_doc_to_docx(path)
     if docx_tmp:
         try:
             return _parse_docx(str(docx_tmp))
         finally:
             docx_tmp.unlink(missing_ok=True)
-
     raise BadRequestException(
         "无法解析 .doc 文件。请安装 LibreOffice，或将文件另存为 .docx 后重试。"
     )
 
 
+def _shape_texts(shape) -> list[str]:
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    if getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
+        return [t for child in shape.shapes for t in _shape_texts(child)]
+
+    texts: list[str] = []
+    if getattr(shape, "has_table", False):
+        rows = []
+        for row in shape.table.rows:
+            cells = [c.text.strip() for c in row.cells if c.text.strip()]
+            if cells:
+                rows.append(" | ".join(cells))
+        if rows:
+            texts.append("\n".join(rows))
+    if getattr(shape, "has_text_frame", False):
+        if t := shape.text_frame.text.strip():
+            texts.append(t)
+    elif hasattr(shape, "text") and (t := (shape.text or "").strip()):
+        texts.append(t)
+    return texts
+
+
 def _parse_pptx(path: str) -> ParsedDocument:
     from pptx import Presentation
 
-    prs = Presentation(path)
     pages: list[ParsedPage] = []
-    for i, slide in enumerate(prs.slides, 1):
-        texts: list[str] = []
-        for shape in slide.shapes:
-            if not hasattr(shape, "text"):
-                continue
-            t = shape.text.strip()
-            if t:
-                texts.append(t)
+    for i, slide in enumerate(Presentation(path).slides, 1):
+        texts = [t for shape in slide.shapes for t in _shape_texts(shape)]
+        if slide.has_notes_slide:
+            if notes := slide.notes_slide.notes_text_frame.text.strip():
+                texts.append(f"[备注]\n{notes}")
         if texts:
             pages.append(ParsedPage(page=i, text="\n".join(texts)))
     return ParsedDocument(pages)
@@ -245,7 +322,6 @@ _PARSERS = {
 
 
 def parse_file(path: str) -> ParsedDocument:
-    """根据扩展名解析文件，返回带页码的 ParsedDocument。"""
     ext = Path(path).suffix.lower()
     if ext not in _PARSERS:
         raise UnsupportedFormatException(
@@ -256,9 +332,7 @@ def parse_file(path: str) -> ParsedDocument:
 
     try:
         doc = _PARSERS[ext](path)
-    except UnsupportedFormatException:
-        raise
-    except BadRequestException:
+    except (UnsupportedFormatException, BadRequestException):
         raise
     except Exception as e:
         logger.error("文件解析失败 (%s): %s", path, e)
@@ -268,7 +342,7 @@ def parse_file(path: str) -> ParsedDocument:
         raise BadRequestException("文件内容为空，无法入库")
 
     logger.info(
-        "文件解析完成: %s, %d 页/段, 文本长度 %d 字符",
+        "解析完成: %s pages=%d chars=%d",
         Path(path).name,
         len(doc.pages),
         len(doc.full_text),

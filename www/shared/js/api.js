@@ -55,7 +55,6 @@ export async function apiUpload(path, formData) {
 
 /**
  * multipart POST；onProgress({ phase, loaded?, total?, ratio? })
- * phase: upload | processing
  */
 export function apiUploadWithProgress(path, formData, onProgress) {
   return new Promise((resolve, reject) => {
@@ -92,7 +91,6 @@ export function apiUploadWithProgress(path, formData, onProgress) {
   });
 }
 
-/** 消费 ask SSE：onEvent({type, ...}) */
 export async function apiAskStream(body, onEvent, signal) {
   const res = await fetch(BASE + "/ask", {
     method: "POST",
@@ -102,7 +100,10 @@ export async function apiAskStream(body, onEvent, signal) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.message || res.statusText);
+    throw new Error(err.message || res.statusText || "问答失败");
+  }
+  if (!res.body) {
+    throw new Error("浏览器不支持流式响应");
   }
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -116,7 +117,7 @@ export async function apiAskStream(body, onEvent, signal) {
       try {
         onEvent(JSON.parse(raw));
       } catch {
-        /* skip malformed SSE payload */
+        /* ignore bad SSE line */
       }
     }
   }

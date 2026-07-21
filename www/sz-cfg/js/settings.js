@@ -7,7 +7,7 @@ const MASKED_SECRET = "***";
 const GROUPS = [
   {
     id: "llm",
-    title: "LLM",
+    title: "模型管理",
     fields: [{ key: "timeout", label: "超时（秒）", type: "number" }],
   },
   {
@@ -29,9 +29,19 @@ const GROUPS = [
   {
     id: "retrieval",
     title: "检索",
+    desc: "问答默认走向量 + BM25 → RRF 混合召回；低于阈值则拒答。",
     fields: [
-      { key: "top_k", label: "召回条数 (top_k)", type: "number" },
-      { key: "score_threshold", label: "分数阈值", type: "number", step: "0.01" },
+      {
+        key: "top_k",
+        label: "融合后召回条数 (top_k)",
+        type: "number",
+      },
+      {
+        key: "score_threshold",
+        label: "拒答分数阈值",
+        type: "number",
+        step: "0.01",
+      },
     ],
   },
   {
@@ -214,7 +224,7 @@ function renderMain() {
   mainEl.innerHTML = `
     <header class="sz-config-header">
       <h2>${esc(group.title)}</h2>
-      <p class="sz-muted">${esc(group.id)}</p>
+      <p class="sz-muted">${esc(group.desc || group.id)}</p>
     </header>
     <form class="sz-config-form" id="sz-config-form" autocomplete="off">
       ${group.fields.map((f) => fieldHtml(f, data)).join("")}
@@ -242,52 +252,84 @@ function renderLlmMain(group) {
   const data = cfg.llm || {};
   const providers = data.providers || [];
   const active = data.active || "";
-  const formats = data.formats || ["openai", "openai-compatible", "local"];
-
-  const rows = providers.length
-    ? providers
-        .map((p) => {
-          const isActive = p.name === active;
-          return `<li class="sz-llm-row${isActive ? " is-active" : ""}" data-name="${esc(p.name)}">
-            <div class="sz-llm-meta">
-              <strong>${esc(p.name)}</strong>
-              <span class="sz-muted">${esc(FORMAT_LABEL[p.format] || p.format)} · ${esc(p.model)}</span>
-              ${p.base_url ? `<span class="sz-muted sz-llm-url">${esc(p.base_url)}</span>` : ""}
-            </div>
-            <div class="sz-llm-actions">
-              ${
-                isActive
-                  ? `<span class="sz-llm-badge">使用中</span>`
-                  : `<button type="button" class="sz-btn sz-btn-primary" data-activate="${esc(p.name)}">设为当前</button>`
-              }
-              <button type="button" class="sz-btn sz-btn-danger" data-remove="${esc(p.name)}" ${isActive && providers.length === 1 ? "disabled" : ""}>删除</button>
-            </div>
-          </li>`;
-        })
-        .join("")
-    : `<li class="sz-muted">尚未注册模型，请在下方添加</li>`;
+  const formats = data.formats || ["openai", "local"];
+  const showAdd = mainEl?.dataset.llmAdd === "1";
 
   const formatOpts = formats
     .map((f) => `<option value="${esc(f)}">${esc(FORMAT_LABEL[f] || f)}</option>`)
     .join("");
 
+  const tableRows = providers.length
+    ? providers
+        .map((p) => {
+          const isActive = p.name === active;
+          const fmt = p.format || "openai";
+          const fmtClass =
+            fmt === "local" ? "is-local" : fmt.startsWith("openai") ? "is-openai" : "";
+          return `<tr class="${isActive ? "is-active" : ""}" data-name="${esc(p.name)}">
+            <td><strong>${esc(p.name)}</strong></td>
+            <td><span class="sz-tag ${fmtClass}">${esc(FORMAT_LABEL[fmt] || fmt)}</span></td>
+            <td class="sz-mono">${esc(p.model || "—")}</td>
+            <td class="sz-llm-url-cell" title="${esc(p.base_url || "")}">${esc(p.base_url || "—")}</td>
+            <td>${
+              p.has_api_key
+                ? '<span class="sz-tag is-ok">已配置</span>'
+                : '<span class="sz-tag is-warn">未配置</span>'
+            }</td>
+            <td class="sz-llm-ops">
+              ${
+                isActive
+                  ? '<span class="sz-tag is-active-badge">使用中</span>'
+                  : `<button type="button" class="sz-link-btn" data-activate="${esc(p.name)}">设为当前</button>`
+              }
+              <button type="button" class="sz-btn sz-btn-danger sz-btn-sm" data-remove="${esc(p.name)}" ${
+                isActive && providers.length === 1 ? "disabled" : ""
+              }>删除</button>
+            </td>
+          </tr>`;
+        })
+        .join("")
+    : `<tr><td colspan="6" class="sz-muted sz-llm-empty">尚未注册模型，点击右上角添加</td></tr>`;
+
   mainEl.innerHTML = `
-    <header class="sz-config-header">
-      <h2>${esc(group.title)}</h2>
-      <p class="sz-muted">注册多个模型，选择其一使用</p>
+    <header class="sz-config-header sz-llm-header">
+      <div>
+        <h2>模型管理</h2>
+        <p class="sz-muted">注册多个对话模型，切换后立即写入当前配置</p>
+      </div>
+      <button type="button" class="sz-btn sz-btn-primary" id="sz-llm-toggle-add">${
+        showAdd ? "收起表单" : "+ 添加模型"
+      }</button>
     </header>
 
-    <section class="sz-llm-block">
-      <h3>已注册</h3>
-      <ul class="sz-llm-list" id="sz-llm-list">${rows}</ul>
+    <div class="sz-llm-tip" role="note">
+      活跃模型会同步到 <code>.env</code> 的 <code>LLM_*</code> / <code>LLM_PROVIDER</code>。本地 Ollama 可将 API Key 留空。
+    </div>
+
+    <section class="sz-llm-card">
+      <div class="sz-llm-table-wrap">
+        <table class="sz-llm-table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>格式</th>
+              <th>模型</th>
+              <th>Base URL</th>
+              <th>Key</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="sz-llm-list">${tableRows}</tbody>
+        </table>
+      </div>
     </section>
 
-    <section class="sz-llm-block">
+    <section class="sz-llm-card${showAdd ? "" : " is-collapsed"}" id="sz-llm-add-panel">
       <h3>注册新模型</h3>
-      <form class="sz-config-form" id="sz-llm-add" autocomplete="off">
+      <form class="sz-config-form sz-llm-form" id="sz-llm-add" autocomplete="off">
         <label class="sz-field">
           <span class="sz-field-label">名称</span>
-          <input name="name" required placeholder="如 deepseek、qwen" />
+          <input type="text" name="name" required placeholder="如 deepseek、qwen" />
         </label>
         <label class="sz-field">
           <span class="sz-field-label">类型</span>
@@ -295,11 +337,11 @@ function renderLlmMain(group) {
         </label>
         <label class="sz-field">
           <span class="sz-field-label">模型 ID</span>
-          <input name="model" required placeholder="如 deepseek-chat、gpt-4o-mini" />
+          <input type="text" name="model" required placeholder="如 deepseek-chat、gpt-4o-mini" />
         </label>
         <label class="sz-field">
           <span class="sz-field-label">Base URL</span>
-          <input name="base_url" placeholder="https://api.deepseek.com/v1" />
+          <input type="text" name="base_url" placeholder="https://api.deepseek.com/v1" />
         </label>
         <label class="sz-field">
           <span class="sz-field-label">API Key</span>
@@ -307,22 +349,33 @@ function renderLlmMain(group) {
         </label>
         <div class="sz-config-actions">
           <button type="submit" class="sz-btn sz-btn-primary">注册</button>
+          <button type="button" class="sz-btn" id="sz-llm-add-cancel">取消</button>
         </div>
       </form>
     </section>
 
-    <section class="sz-llm-block">
-      <h3>超时</h3>
-      <form class="sz-config-form" id="sz-config-form" autocomplete="off">
+    <section class="sz-llm-card">
+      <h3>请求超时</h3>
+      <form class="sz-config-form sz-llm-form" id="sz-config-form" autocomplete="off">
         ${group.fields.map((f) => fieldHtml(f, data)).join("")}
         <div class="sz-config-actions">
-          <button type="submit" class="sz-btn sz-btn-primary" ${cfg.meta?.env_writable === false ? "disabled" : ""}>保存超时</button>
+          <button type="submit" class="sz-btn sz-btn-primary" ${
+            cfg.meta?.env_writable === false ? "disabled" : ""
+          }>保存超时</button>
         </div>
       </form>
     </section>
     <div class="sz-config-effects" id="sz-config-effects" hidden></div>
   `;
 
+  document.getElementById("sz-llm-toggle-add")?.addEventListener("click", () => {
+    mainEl.dataset.llmAdd = showAdd ? "0" : "1";
+    renderLlmMain(group);
+  });
+  document.getElementById("sz-llm-add-cancel")?.addEventListener("click", () => {
+    mainEl.dataset.llmAdd = "0";
+    renderLlmMain(group);
+  });
   document.getElementById("sz-llm-list")?.addEventListener("click", onLlmListClick);
   document.getElementById("sz-llm-add").onsubmit = (e) => {
     e.preventDefault();
@@ -384,6 +437,7 @@ async function addLlmProvider(form) {
     await apiPost("/llm-providers", payload);
     toast(`已注册 ${payload.name}`, "success");
     form.reset();
+    if (mainEl) mainEl.dataset.llmAdd = "0";
     await load();
   } catch (err) {
     toast(err.message || "注册失败", "error");

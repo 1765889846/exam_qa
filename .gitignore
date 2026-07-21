@@ -26,19 +26,12 @@ htmlcov/
 *.db-shm
 *.db-wal
 
-# 原始资料与用户上传
+# 原始资料与用户上传（运行时，非前端源码）
 data/
 
-# 前端（仅入库静态 UI：sz / sz-cfg / shared）
+# 前端：www/ 整树入库；只忽略构建垃圾
 node_modules/
-www/*
-!www/sz/
-!www/sz/**
-!www/sz-cfg/
-!www/sz-cfg/**
-!www/shared/
-!www/shared/**
-dist/
+**/node_modules/
 .vite/
 *.tsbuildinfo
 

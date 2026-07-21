@@ -90,14 +90,32 @@ class TestAskStreamAPI:
             assert body["code"] == 200
             assert body["data"]["grounded"] is False
 
-    def test_unknown_course_id_404(self):
+    def test_concept_mode_stream_accepted(self):
+        with patch("src.services.query.retrieve", return_value=[]):
+            with client.stream(
+                "POST",
+                "/api/v1/ask",
+                json={
+                    "question": "卷积定理",
+                    "mode": "concept",
+                    "course_id": "course-default",
+                    "stream": True,
+                },
+            ) as resp:
+                assert resp.status_code == 200
+                body = "".join(resp.iter_text())
+                assert '"type": "done"' in body
+                assert "未找到相关内容" in body
+
+    def test_invalid_mode_422(self):
         r = client.post(
             "/api/v1/ask",
             json={
                 "question": "测试",
-                "mode": "qa",
-                "course_id": "course-nonexistent",
+                "mode": "chapter",
+                "course_id": "course-default",
                 "stream": False,
             },
         )
-        assert r.status_code == 404
+        assert r.status_code == 422
+        assert r.json()["code"] == 422

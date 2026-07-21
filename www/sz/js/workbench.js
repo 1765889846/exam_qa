@@ -11,6 +11,16 @@ import {
   setActiveConversationId,
 } from "../../shared/js/conversations.js";
 
+const ASK_MODE_KEY = "sz.ask_mode";
+
+function getAskMode() {
+  return localStorage.getItem(ASK_MODE_KEY) === "concept" ? "concept" : "qa";
+}
+
+function setAskMode(mode) {
+  localStorage.setItem(ASK_MODE_KEY, mode === "concept" ? "concept" : "qa");
+}
+
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, "&amp;")
@@ -61,15 +71,30 @@ function renderTurnHtml(turn) {
   const grounded = turn.grounded;
   const groundedAttr =
     grounded === false ? ` data-grounded="false"` : grounded === true ? ` data-grounded="true"` : "";
-  return `<div class="sz-turn">
+  const mode = turn.mode === "concept" ? "concept" : "qa";
+  return `<div class="sz-turn" data-mode="${mode}">
     <div class="sz-q"></div>
     <div class="sz-a"${groundedAttr}></div>
     <div class="sz-cites"></div>
   </div>`;
 }
 
+function modeLabel(mode) {
+  return mode === "concept" ? "知识点" : "自由问答";
+}
+
 function paintTurn(node, turn) {
-  node.querySelector(".sz-q").textContent = turn.question || "";
+  const q = node.querySelector(".sz-q");
+  const mode = turn.mode === "concept" ? "concept" : "qa";
+  node.dataset.mode = mode;
+  q.replaceChildren();
+  const label = document.createElement("span");
+  label.className = "sz-q-mode";
+  label.textContent = modeLabel(mode);
+  const text = document.createElement("span");
+  text.className = "sz-q-text";
+  text.textContent = turn.question || "";
+  q.append(label, text);
   const a = node.querySelector(".sz-a");
   a.textContent = turn.answer || "";
   if (turn.grounded === false) a.dataset.grounded = "false";
@@ -81,7 +106,11 @@ function paintTurn(node, turn) {
 function showAskEmpty() {
   const streamEl = document.getElementById("sz-ask-stream");
   if (!streamEl) return;
-  streamEl.innerHTML = `<p class="sz-ask-empty">选择课程后提问；左侧可切换历史对话</p>`;
+  const mode = getAskMode();
+  streamEl.innerHTML =
+    mode === "concept"
+      ? `<p class="sz-ask-empty">选择课程后输入知识点名称<br />将按「定义 → 公式 → 例题」聚合资料</p>`
+      : `<p class="sz-ask-empty">选择课程后提问；左侧可切换历史对话<br />检索已启用向量 + BM25 混合召回</p>`;
 }
 
 function renderConversationTurns(conv) {
@@ -91,7 +120,7 @@ function renderConversationTurns(conv) {
     showAskEmpty();
     return;
   }
-  streamEl.innerHTML = conv.turns.map(() => renderTurnHtml({})).join("");
+  streamEl.innerHTML = conv.turns.map((t) => renderTurnHtml(t)).join("");
   const nodes = streamEl.querySelectorAll(".sz-turn");
   conv.turns.forEach((t, i) => paintTurn(nodes[i], t));
   streamEl.scrollTop = streamEl.scrollHeight;
@@ -202,7 +231,23 @@ function setupAsk() {
   const streamEl = document.getElementById("sz-ask-stream");
   const form = document.getElementById("sz-ask-form");
   const input = document.getElementById("sz-ask-input");
-  if (!streamEl || !form || !input) return;
+  const modeEl = document.getElementById("sz-ask-mode");
+  const submitBtn = document.getElementById("sz-ask-submit");
+  if (!streamEl || !form || !input || !modeEl) return;
+
+  let asking = false;
+
+  modeEl.value = getAskMode();
+  const syncModeUi = () => {
+    const mode = modeEl.value === "concept" ? "concept" : "qa";
+    setAskMode(mode);
+    input.placeholder =
+      mode === "concept" ? "输入知识点名称，如：卷积定理" : "输入问题…";
+    if (submitBtn) submitBtn.textContent = mode === "concept" ? "检索" : "提问";
+    if (streamEl.querySelector(".sz-ask-empty")) showAskEmpty();
+  };
+  modeEl.addEventListener("change", syncModeUi);
+  syncModeUi();
 
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -213,8 +258,11 @@ function setupAsk() {
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
+    if (asking) return;
+
     const question = input.value.trim();
     const courseId = getCourseId();
+    const mode = modeEl.value === "concept" ? "concept" : "qa";
     if (!question || !courseId) {
       toast("需要课程与问题", "error");
       return;
@@ -227,13 +275,19 @@ function setupAsk() {
     let answer = "";
     const turnWrap = document.createElement("div");
     turnWrap.className = "sz-turn";
-    turnWrap.innerHTML = `<div class="sz-q"></div><div class="sz-a" id="sz-live-a"></div><div class="sz-cites" id="sz-cites"></div>`;
-    turnWrap.querySelector(".sz-q").textContent = question;
-    streamEl.appendChild(turnWrap);
+    turnWrap.dataset.mode = mode;
+    turnWrap.innerHTML =
+      '<div class="sz-q"></div><div class="sz-a"></div><div class="sz-cites"></div>';
+    paintTurn(turnWrap, { question, mode, answer: "", citations: [] });
     const live = turnWrap.querySelector(".sz-a");
+    live.textContent = "";
+    delete live.dataset.grounded;
+    streamEl.appendChild(turnWrap);
     const citesEl = turnWrap.querySelector(".sz-cites");
-    const submitBtn = form.querySelector('button[type="submit"]');
+
+    asking = true;
     if (submitBtn) submitBtn.disabled = true;
+    modeEl.disabled = true;
     input.value = "";
     streamEl.scrollTop = streamEl.scrollHeight;
 
@@ -242,15 +296,17 @@ function setupAsk() {
     let finished = false;
 
     try {
-      await apiAskStream({ question, course_id: courseId, mode: "qa" }, (ev) => {
+      await apiAskStream({ question, course_id: courseId, mode }, (ev) => {
         if (ev.type === "phase") {
           live.dataset.phase = ev.phase || "";
           if (!answer) {
             live.textContent =
               ev.phase === "retrieving"
-                ? "检索中…（向量化问题）"
+                ? "检索中…"
                 : ev.phase === "generating"
-                  ? "生成中…"
+                  ? mode === "concept"
+                    ? "聚合生成中…"
+                    : "生成中…"
                   : "";
           }
         } else if (ev.type === "delta") {
@@ -278,7 +334,7 @@ function setupAsk() {
       });
 
       if (finished) {
-        appendTurn(courseId, { question, answer, citations, grounded });
+        appendTurn(courseId, { question, answer, citations, grounded, mode });
         refreshHistoryList();
       }
     } catch (err) {
@@ -287,7 +343,9 @@ function setupAsk() {
       live.dataset.grounded = "false";
       toast(msg, "error");
     } finally {
+      asking = false;
       if (submitBtn) submitBtn.disabled = false;
+      modeEl.disabled = false;
     }
   });
 }
