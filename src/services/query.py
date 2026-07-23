@@ -1,4 +1,4 @@
-"""查询编排：mode 路由 → 检索 → 生成 / 拒答。"""
+"""查询编排：mode 路由 → 检索 / 章节聚合 → 生成 / 拒答。"""
 
 import logging
 
@@ -12,14 +12,15 @@ from src.services.storage.vector_store import ChromaVectorStore
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_MODES = frozenset({"qa", "concept"})
+SUPPORTED_MODES = frozenset({"qa", "concept", "chapter"})
 CONCEPT_TOP_K = 12
+CHAPTER_MAX_CHUNKS = 24
 _REFUSAL = "资料库中未找到相关内容"
 
 
 def _validate(mode: str, course_id: str) -> None:
     if mode not in SUPPORTED_MODES:
-        raise BadRequestException(f"仅支持 mode=qa|concept，收到 mode={mode}")
+        raise BadRequestException(f"仅支持 mode=qa|concept|chapter，收到 mode={mode}")
     if not course_id or not course_id.strip():
         raise BadRequestException("course_id 不能为空")
 
@@ -37,6 +38,16 @@ def _citations(raw: list[dict]) -> list[Citation]:
 
 
 def _retrieve(question: str, mode: str, vs: ChromaVectorStore, course_id: str) -> list[dict]:
+    if mode == "chapter":
+        hits = vs.get_by_chapter(course_id, question.strip())
+        capped: list[dict] = []
+        for h in hits[:CHAPTER_MAX_CHUNKS]:
+            item = dict(h)
+            meta = dict(h.get("metadata") or {})
+            item["metadata"] = meta
+            item["score"] = 1.0
+            capped.append(item)
+        return capped
     return retrieve(
         query=question,
         vs=vs,

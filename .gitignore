@@ -49,5 +49,8 @@ desktop.ini
 # Brainstorm visual companion
 .superpowers/
 
+# CodeGraph 本地索引
+.codegraph/
+
 *.swp
 *.swo

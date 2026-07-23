@@ -231,7 +231,7 @@ def _find_soffice() -> str | None:
     return None
 
 
-def _convert_doc_to_docx(path: str) -> Path | None:
+def _convert_doc_to_docx_soffice(path: str) -> Path | None:
     soffice = _find_soffice()
     if not soffice:
         return None
@@ -262,6 +262,48 @@ def _convert_doc_to_docx(path: str) -> Path | None:
         shutil.rmtree(out_dir, ignore_errors=True)
 
 
+def _convert_doc_to_docx_word(path: str) -> Path | None:
+    """Windows：无 LibreOffice 时用本机 Word COM 另存为 .docx。"""
+    if os.name != "nt":
+        return None
+    src = str(Path(path).resolve())
+    fd, dest_name = tempfile.mkstemp(suffix=".docx", prefix="exam_doc_")
+    os.close(fd)
+    dest = Path(dest_name)
+    dest.unlink(missing_ok=True)
+    src_ps = src.replace("'", "''")
+    dest_ps = str(dest.resolve()).replace("'", "''")
+    ps = (
+        "$ErrorActionPreference='Stop'; "
+        "$word=New-Object -ComObject Word.Application; "
+        "$word.Visible=$false; "
+        f"$doc=$word.Documents.Open('{src_ps}'); "
+        f"$doc.SaveAs([ref]'{dest_ps}',[ref]16); "
+        "$doc.Close(); $word.Quit(); "
+        "[System.Runtime.InteropServices.Marshal]::ReleaseComObject($word)|Out-Null"
+    )
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if dest.is_file() and dest.stat().st_size > 0:
+            return dest
+        dest.unlink(missing_ok=True)
+        return None
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+        logger.warning("Word COM 转换失败: %s", e)
+        dest.unlink(missing_ok=True)
+        return None
+
+
+def _convert_doc_to_docx(path: str) -> Path | None:
+    return _convert_doc_to_docx_soffice(path) or _convert_doc_to_docx_word(path)
+
+
 def _parse_doc(path: str) -> ParsedDocument:
     docx_tmp = _convert_doc_to_docx(path)
     if docx_tmp:
@@ -270,7 +312,7 @@ def _parse_doc(path: str) -> ParsedDocument:
         finally:
             docx_tmp.unlink(missing_ok=True)
     raise BadRequestException(
-        "无法解析 .doc 文件。请安装 LibreOffice，或将文件另存为 .docx 后重试。"
+        "无法解析 .doc 文件。请安装 LibreOffice 或 Microsoft Word，或将文件另存为 .docx 后重试。"
     )
 
 

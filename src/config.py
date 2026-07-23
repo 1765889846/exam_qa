@@ -73,7 +73,11 @@ class EmbeddingConfig:
     """
 
     provider: str = field(default_factory=lambda: os.getenv("EMBEDDING_PROVIDER", "local"))
-    model: str = field(default_factory=lambda: os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2"))
+    model: str = field(
+        default_factory=lambda: os.getenv(
+            "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+        )
+    )
     api_key: str = field(default_factory=lambda: os.getenv("EMBEDDING_API_KEY", ""))
     base_url: str = field(default_factory=lambda: os.getenv("EMBEDDING_BASE_URL", ""))
     timeout: int = field(default_factory=lambda: int(os.getenv("EMBEDDING_TIMEOUT", "60")))
@@ -107,6 +111,22 @@ class RetrievalConfig:
     score_threshold: float = field(
         default_factory=lambda: float(os.getenv("RETRIEVAL_SCORE_THRESHOLD", "0.25"))
     )
+    # P2-A：BGE CrossEncoder 精排；默认关，避免 CI/首启强制下载
+    rerank_enabled: bool = field(
+        default_factory=lambda: os.getenv("RERANK_ENABLED", "false").lower() == "true"
+    )
+    rerank_model: str = field(
+        default_factory=lambda: os.getenv(
+            "RERANK_MODEL", "BAAI/bge-reranker-v2-m3"
+        ).strip()
+        or "BAAI/bge-reranker-v2-m3"
+    )
+    rerank_candidates: int = field(
+        default_factory=lambda: int(os.getenv("RERANK_CANDIDATES", "20"))
+    )
+    rerank_top_n: int = field(
+        default_factory=lambda: int(os.getenv("RERANK_TOP_N", "0"))
+    )  # 0 → 回退 top_k
 
 
 @dataclass
@@ -170,6 +190,10 @@ class AppConfig:
             raise ValueError("top_k 必须大于 0")
         if not (0 <= self.retrieval.score_threshold <= 1):
             raise ValueError("score_threshold 须在 0～1")
+        if self.retrieval.rerank_candidates <= 0:
+            raise ValueError("rerank_candidates 必须大于 0")
+        if self.retrieval.rerank_top_n < 0:
+            raise ValueError("rerank_top_n 不能为负")
 
 
 config = AppConfig()

@@ -74,18 +74,23 @@ class ColoredFormatter(logging.Formatter):
             record.levelname = original
 
 
+_QUIET_LOGGERS = (
+    "asyncio",
+    "chromadb",
+    "httpcore",
+    "httpx",
+    "huggingface_hub",
+    "openai",
+    "sentence_transformers",
+    "torch",
+    "transformers",
+    "urllib3",
+    "watchfiles",
+)
+
+
 def quiet_third_party_loggers() -> None:
-    for name in (
-        "chromadb",
-        "httpx",
-        "httpcore",
-        "sentence_transformers",
-        "transformers",
-        "torch",
-        "huggingface_hub",
-        "urllib3",
-        "watchfiles",
-    ):
+    for name in _QUIET_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
@@ -102,6 +107,7 @@ def apply_log_level(level: str) -> None:
     root.setLevel(lvl)
     for handler in root.handlers:
         handler.setLevel(lvl)
+    quiet_third_party_loggers()
 
 
 def setup_logging(*, debug: bool = False, level: str | None = None) -> None:
@@ -129,6 +135,9 @@ def get_uvicorn_log_config(*, debug: bool = False, level: str | None = None) -> 
         "datefmt": DATE_FMT,
         "access": True,
     }
+    third_party = {
+        name: {"level": "WARNING", "propagate": True} for name in _QUIET_LOGGERS
+    }
     return {
         "version": 1,
         "disable_existing_loggers": False,
@@ -152,6 +161,7 @@ def get_uvicorn_log_config(*, debug: bool = False, level: str | None = None) -> 
             "uvicorn": {"handlers": ["default"], "level": "WARNING", "propagate": False},
             "uvicorn.error": {"level": "WARNING", "handlers": ["default"], "propagate": False},
             "uvicorn.access": {"handlers": ["access"], "level": "WARNING", "propagate": False},
+            **third_party,
             "": {"handlers": ["default"], "level": lvl_name},
         },
     }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import socket
 import time
@@ -20,7 +21,6 @@ from src.dependencies import get_catalog_store, get_doc_store, get_llm_client, g
 from src.exceptions import AppException
 from src.services.embedding import get_embedding_client
 from src.services.env_store import env_was_created
-from src.services.ingestion import scan_knowledge_dir
 from src.services.storage.catalog_store import (
     DEFAULT_COLLEGE_ID,
     DEFAULT_COURSE_ID,
@@ -116,18 +116,7 @@ async def lifespan(app: FastAPI):
     app.state.llm_health = "ok" if llm.configured else "unavailable"
     app.state.embedding_health = get_embedding_client().status()
 
-    default_course = catalog.require_course(DEFAULT_COURSE_ID)
-    try:
-        scan_knowledge_dir(
-            vs,
-            ds,
-            course_id=default_course["id"],
-            course=default_course["name"],
-            college_id=default_course["college_id"],
-            recover_stale=True,
-        )
-    except Exception as e:
-        logger.warning("启动扫描 knowledge 失败: %s", e)
+    catalog.require_course(DEFAULT_COURSE_ID)
 
     if env_was_created():
         logger.info("已从 .env.example 创建 .env，请按需填写 LLM_API_KEY")
@@ -274,7 +263,6 @@ def _is_port_in_use(host: str, port: int) -> bool:
 
 def main() -> None:
     """CLI 入口：uv run exam"""
-    import asyncio
     import sys
 
     import uvicorn

@@ -257,13 +257,18 @@ function setupUploadZone() {
         <input type="file" id="sz-file-input" accept="${ACCEPT}" hidden />
       </label>
       <button type="button" id="sz-scan-btn">扫描目录</button>
+      <label class="sz-muted" title="忽略 mtime，整课重入库以补写 chapter 等元数据">
+        <input type="checkbox" id="sz-scan-force" />
+        强制重建
+      </label>
     </div>
-    <p class="sz-muted sz-upload-hint">PDF / TXT / MD / DOC / DOCX / PPTX</p>
+    <p class="sz-muted sz-upload-hint">PDF / TXT / MD / DOC / DOCX / PPTX · 章节概览需强制重建或重新上传</p>
   `;
   ensureProgressUi(zone);
 
   const input = document.getElementById("sz-file-input");
   const scanBtn = document.getElementById("sz-scan-btn");
+  const forceEl = document.getElementById("sz-scan-force");
 
   input.addEventListener("change", async () => {
     const file = input.files?.[0];
@@ -309,17 +314,33 @@ function setupUploadZone() {
       toast("请先选择课程", "error");
       return;
     }
+    const force = !!forceEl?.checked;
+    if (
+      force &&
+      !window.confirm(
+        "强制重建将重新解析并向量化本课全部资料（可补写章节元数据），耗时更长。继续？"
+      )
+    ) {
+      return;
+    }
     const fd = new FormData();
     fd.append("course_id", courseId);
+    if (force) fd.append("force", "true");
     setBusy(zone, true);
-    showProgress(zone, { phase: "processing", label: "扫描目录中…" });
+    showProgress(zone, {
+      phase: "processing",
+      label: force ? "强制重建中…" : "扫描目录中…",
+    });
     try {
       await apiUploadWithProgress("/documents/scan", fd, (ev) => {
         if (ev.phase === "processing") {
-          showProgress(zone, { phase: "processing", label: "扫描 · 入库中…" });
+          showProgress(zone, {
+            phase: "processing",
+            label: force ? "强制重建 · 入库中…" : "扫描 · 入库中…",
+          });
         }
       });
-      toast("扫描完成", "success");
+      toast(force ? "强制重建完成" : "扫描完成", "success");
       await refreshDocs();
     } catch (err) {
       toast(err.message || "扫描失败", "error");

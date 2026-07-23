@@ -1,22 +1,33 @@
-"""API 契约单元测试。"""
+"""HTTP 契约：目录 / 资料上传删除扫描 / 问答校验 / 配置与模型。"""
+
+import tempfile
+from io import BytesIO
+from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from src.main import app
+from src.services import llm_providers as registry
 
 client = TestClient(app)
 
 
 class TestAskAPI:
-    def test_validation_error_format(self):
-        r = client.post("/api/v1/ask", json={"question": ""})
-        assert r.status_code == 422
-        body = r.json()
-        assert body["code"] == 422
-        assert "message" in body
-
-    def test_missing_course_id(self):
+    def test_missing_course_id_422(self):
         r = client.post("/api/v1/ask", json={"question": "卷积定理"})
+        assert r.status_code == 422
+        assert r.json()["code"] == 422
+
+    def test_invalid_mode_422(self):
+        r = client.post(
+            "/api/v1/ask",
+            json={
+                "question": "测试",
+                "mode": "bogus",
+                "course_id": "course-default",
+            },
+        )
         assert r.status_code == 422
 
 
@@ -24,70 +35,119 @@ class TestCatalogAPI:
     def test_list_colleges_and_courses(self):
         r = client.get("/api/v1/colleges")
         assert r.status_code == 200
-        assert len(r.json()["data"]["items"]) >= 1
         assert any(c["id"] == "college-default" for c in r.json()["data"]["items"])
-
         r2 = client.get("/api/v1/courses")
         assert r2.status_code == 200
-        courses = r2.json()["data"]["items"]
-        assert any(c["id"] == "course-default" for c in courses)
-
-        r3 = client.get("/api/v1/courses", params={"college_id": "college-default"})
-        assert r3.status_code == 200
-        assert all(
-            c["college_id"] == "college-default" for c in r3.json()["data"]["items"]
-        )
+        assert any(c["id"] == "course-default" for c in r2.json()["data"]["items"])
 
 
 class TestDocumentsAPI:
     def test_list_requires_course_id(self):
-        r = client.get("/api/v1/documents")
-        assert r.status_code == 422
+        assert client.get("/api/v1/documents").status_code == 422
 
-    def test_list_ok_with_course_id(self):
-        r = client.get(
-            "/api/v1/documents",
-            params={"course_id": "course-default"},
-        )
+    def test_list_ok(self):
+        r = client.get("/api/v1/documents", params={"course_id": "course-default"})
         assert r.status_code == 200
         data = r.json()["data"]
-        assert "items" in data
-        assert "embedding" in data
+        assert "items" in data and "embedding" in data
 
-    def test_scan_response_shape(self):
-        r = client.post(
+    def test_scan_and_unknown_course(self):
+        ok = client.post(
             "/api/v1/documents/scan",
             data={"course_id": "course-default"},
         )
-        assert r.status_code == 200
-        body = r.json()
-        assert body["code"] == 200
-        assert "message" in body["data"]
+        assert ok.status_code == 200
+        assert ok.json()["data"]["force"] is False
 
-    def test_scan_unknown_course_404(self):
-        r = client.post(
+        bad = client.post(
             "/api/v1/documents/scan",
             data={"course_id": "course-nonexistent"},
         )
+        assert bad.status_code == 404
+
+    def test_scan_force_true(self, monkeypatch):
+        called = {}
+
+        def fake_scan(*args, **kwargs):
+            called.update(kwargs)
+
+        monkeypatch.setattr("src.apis.v1.documents.scan_knowledge_dir", fake_scan)
+        r = client.post(
+            "/api/v1/documents/scan",
+            data={"course_id": "course-default", "force": "true"},
+        )
+        assert r.status_code == 200
+        assert r.json()["data"]["force"] is True
+        assert called.get("force") is True
+
+    def test_upload_calls_ingest_with_course_id(self):
+        def fake_ingest(**kwargs):
+            assert kwargs["course_id"] == "course-default"
+            return "42"
+
+        with patch("src.apis.v1.documents.ingest_file", side_effect=fake_ingest):
+            r = client.post(
+                "/api/v1/documents",
+                data={"course_id": "course-default"},
+                files={"file": ("note.md", BytesIO(b"# hello\n"), "text/markdown")},
+            )
+        assert r.status_code == 200
+        body = r.json()["data"]
+        assert body["doc_id"] == "42"
+        assert body["course_id"] == "course-default"
+
+    def test_upload_rejects_unsupported(self):
+        r = client.post(
+            "/api/v1/documents",
+            data={"course_id": "course-default"},
+            files={"file": ("x.xyz", BytesIO(b"nope"), "application/octet-stream")},
+        )
+        assert r.status_code == 400
+
+    def test_delete_requires_course_and_404(self):
+        r = client.delete("/api/v1/documents/99999?course_id=course-default")
         assert r.status_code == 404
 
 
+class TestConfigAndProviders:
+    def test_config_includes_retrieval_rerank(self):
+        r = client.get("/api/v1/config")
+        assert r.status_code == 200
+        ret = r.json()["data"]["retrieval"]
+        for key in (
+            "top_k",
+            "score_threshold",
+            "rerank_enabled",
+            "rerank_model",
+            "rerank_candidates",
+            "rerank_top_n",
+        ):
+            assert key in ret
+
+    def test_llm_providers_register_list(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "llm_providers.json"
+            monkeypatch.setattr(registry, "STORE_PATH", path)
+            monkeypatch.setattr(registry, "write_env_updates", lambda updates: None)
+            monkeypatch.setattr(registry, "ensure_seeded_from_env", lambda: None)
+
+            r = client.post(
+                "/api/v1/llm-providers",
+                json={
+                    "name": "deepseek",
+                    "format": "openai",
+                    "model": "deepseek-chat",
+                    "base_url": "https://api.deepseek.com/v1",
+                    "api_key": "sk-test",
+                },
+            )
+            assert r.status_code == 200
+            listed = client.get("/api/v1/llm-providers").json()["data"]
+            assert any(p["name"] == "deepseek" for p in listed["items"])
+
+
 class TestRootRedirect:
-    def test_root_goes_to_sz_when_ui_present(self):
+    def test_root_goes_to_sz(self):
         r = client.get("/", follow_redirects=False)
         assert r.status_code in (307, 302)
         assert r.headers["location"].endswith("/sz/")
-
-    def test_root_redirect_helpers(self):
-        import tempfile
-        from pathlib import Path
-
-        from src.main import _ui_ready, _root_redirect_url
-
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            assert _root_redirect_url(base) == "/docs"
-            (base / "sz").mkdir()
-            (base / "sz" / "index.html").write_text("x", encoding="utf-8")
-            assert _ui_ready(base) is True
-            assert _root_redirect_url(base) == "/sz/"

@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 # ponytail: Chroma 单次 upsert 上限经验值，超大文档分批写入
 _UPSERT_BATCH = 128
 
+_CHAPTER_TITLE = re.compile(
+    r"(第\s*[零一二三四五六七八九十百千0-9]+\s*章[^\n]{0,40}|Chapter\s+\d+[^\n]{0,40})",
+    re.IGNORECASE,
+)
+_MD_HEADER = re.compile(r"^(#{1,3})\s+(.+)$", re.MULTILINE)
+
 
 _LATEX_BLOCK = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
 _LATEX_INLINE = re.compile(r"\$([^$]+?)\$")
@@ -129,6 +135,68 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
         raise ServiceUnavailableException("向量化服务不可用", detail=str(e)) from e
 
 
+def _normalize_chapter(title: str) -> str:
+    return re.sub(r"\s+", " ", title.strip())
+
+
+def _is_chapter_like(title: str) -> bool:
+    return bool(_CHAPTER_TITLE.search(title))
+
+
+def _collect_section_headers(text: str) -> list[tuple[int, str]]:
+    """(char_pos, title)：MD 标题 + 行内「第N章」；章级标题优先保留。"""
+    headers: list[tuple[int, str]] = []
+    for m in _MD_HEADER.finditer(text):
+        title = _normalize_chapter(m.group(2))
+        if title:
+            headers.append((m.start(), title))
+    for m in _CHAPTER_TITLE.finditer(text):
+        title = _normalize_chapter(m.group(1))
+        if title and not any(abs(p - m.start()) < 4 and t == title for p, t in headers):
+            headers.append((m.start(), title))
+    headers.sort(key=lambda x: x[0])
+    return headers
+
+
+def assign_chapters(
+    text: str,
+    chunks: list[str],
+    *,
+    pages: list[int | None] | None = None,
+) -> list[str]:
+    """为每个 chunk 推断 chapter 名；无法推断则为空串（Chroma 不用 None）。"""
+    if not chunks:
+        return []
+    headers = _collect_section_headers(text)
+    out: list[str] = []
+    for i, chunk in enumerate(chunks):
+        chapter = ""
+        m = _CHAPTER_TITLE.search(chunk)
+        if m:
+            chapter = _normalize_chapter(m.group(1))
+        elif headers:
+            try:
+                pos = text.index(chunk[: min(80, len(chunk))])
+            except ValueError:
+                pos = -1
+            if pos >= 0:
+                chapter_hit = ""
+                any_hit = ""
+                for hpos, title in reversed(headers):
+                    if hpos > pos:
+                        continue
+                    if not any_hit:
+                        any_hit = title
+                    if _is_chapter_like(title):
+                        chapter_hit = title
+                        break
+                chapter = chapter_hit or any_hit
+        if not chapter and pages is not None and i < len(pages) and pages[i] is not None:
+            chapter = f"第{pages[i]}页"
+        out.append(chapter)
+    return out
+
+
 def _enrich_chunks_with_context(
     text: str,
     chunks: list[str],
@@ -137,9 +205,8 @@ def _enrich_chunks_with_context(
     if not chunks:
         return chunks
 
-    header_pattern = re.compile(r"^(#{1,3})\s+(.+)$", re.MULTILINE)
     headers: list[tuple[int, str, str]] = []
-    for m in header_pattern.finditer(text):
+    for m in _MD_HEADER.finditer(text):
         headers.append((m.start(), m.group(2).strip(), m.group(1)))
 
     if not headers:
@@ -286,6 +353,7 @@ def ingest_file(
 
         chunk_texts = [c[0] for c in raw_chunks]
         chunk_pages = [c[1] for c in raw_chunks]
+        chapters = assign_chapters(full_text, chunk_texts, pages=chunk_pages)
         chunk_texts = _enrich_chunks_with_context(full_text, chunk_texts)
         logger.info("分块完成: %s, 共 %d 个 chunk", filename, len(chunk_texts))
 
@@ -302,6 +370,7 @@ def ingest_file(
                 "college_id": college_id,
                 "text": chunk_text,
                 "page": chunk_pages[i],
+                "chapter": chapters[i] if i < len(chapters) else "",
             })
 
         wiped = _upsert_chunks_batched(vs, chunk_dicts, embeddings)
@@ -341,8 +410,9 @@ def scan_knowledge_dir(
     course: str = DEFAULT_COURSE_NAME,
     college_id: str = DEFAULT_COLLEGE_ID,
     recover_stale: bool = False,
+    force: bool = False,
 ) -> None:
-    """扫描 knowledge 目录并入库。"""
+    """扫描 knowledge；force=True 时对已 done 文件也重入库（补 chapter 等）。"""
     data_dir = Path(config.storage.knowledge_dir)
     if not data_dir.exists():
         return
@@ -370,13 +440,20 @@ def scan_knowledge_dir(
                 course_id,
             )
             continue
+        if force and existing and existing.get("status") == "done":
+            to_ingest.append(f)
+            continue
         if _needs_reindex(existing, mtime):
             to_ingest.append(f)
 
     if not to_ingest:
         return
 
-    logger.info("发现 %d 个待入库/更新文件，开始自动导入…", len(to_ingest))
+    logger.info(
+        "发现 %d 个待入库/更新文件%s，开始扫描入库…",
+        len(to_ingest),
+        "（强制重建）" if force else "",
+    )
     for f in to_ingest:
         try:
             doc_id = ingest_file(
@@ -387,6 +464,6 @@ def scan_knowledge_dir(
                 course=course,
                 college_id=college_id,
             )
-            logger.info("自动入库: %s -> doc_id=%s", f.name, doc_id)
+            logger.info("扫描入库: %s -> doc_id=%s", f.name, doc_id)
         except Exception as e:
-            logger.warning("自动入库失败 %s: %s", f.name, e)
+            logger.warning("扫描入库失败 %s: %s", f.name, e)

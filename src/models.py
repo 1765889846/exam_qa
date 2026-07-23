@@ -20,7 +20,7 @@ class AnswerData(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=1, description="问题内容不能为空")
     course_id: str = Field(..., min_length=1, description="课程 ID，检索隔离必填")
-    mode: Literal["qa", "concept"] = "qa"
+    mode: Literal["qa", "concept", "chapter"] = "qa"
     stream: bool = False
 
 
@@ -42,6 +42,10 @@ class EmbeddingPatch(BaseModel):
 class RetrievalPatch(BaseModel):
     top_k: int | None = Field(default=None, ge=1)
     score_threshold: float | None = Field(default=None, ge=0, le=1)
+    rerank_enabled: bool | None = None
+    rerank_model: str | None = None
+    rerank_candidates: int | None = Field(default=None, ge=1)
+    rerank_top_n: int | None = Field(default=None, ge=0)
 
 
 class ChunkPatch(BaseModel):

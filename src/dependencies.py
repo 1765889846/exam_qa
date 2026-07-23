@@ -48,12 +48,14 @@ def get_embedding_client() -> EmbeddingClient:
 def reload_services() -> None:
     """配置变更后清空单例缓存。"""
     from src.services.embedding import reset_embedding_client
+    from src.services.rerank import clear_reranker
 
     get_vector_store.cache_clear()
     get_doc_store.cache_clear()
     get_catalog_store.cache_clear()
     get_llm_client.cache_clear()
     reset_embedding_client()
+    clear_reranker()
 
 
 async def get_current_user() -> None:

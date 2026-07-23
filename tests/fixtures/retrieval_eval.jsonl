@@ -1,0 +1,5 @@
+{"course_id": "course-default", "question": "傅里叶变换的定义", "relevant_source_files": ["signals.md"], "relevant_contains": ["傅里叶"]}
+{"course_id": "course-default", "question": "卷积定理", "relevant_source_files": ["signals.md"], "relevant_contains": ["卷积"]}
+{"course_id": "course-default", "question": "采样定理奈奎斯特", "relevant_source_files": ["signals.md"], "relevant_contains": ["采样"]}
+{"course_id": "course-default", "question": "完全无关的巴黎首都问题", "relevant_source_files": [], "expect_empty": true, "note": "拒答类：不应命中讲义"}
+{"course_id": "course-ideology-2025", "question": "傅里叶变换的时移性质", "relevant_source_files": [], "expect_empty": true, "note": "跨课负例：他课不得命中默认课资料"}

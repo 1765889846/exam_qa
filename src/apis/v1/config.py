@@ -55,6 +55,10 @@ def _build_config_data(request: Request) -> dict:
         "retrieval": {
             "top_k": config.retrieval.top_k,
             "score_threshold": config.retrieval.score_threshold,
+            "rerank_enabled": config.retrieval.rerank_enabled,
+            "rerank_model": config.retrieval.rerank_model,
+            "rerank_candidates": config.retrieval.rerank_candidates,
+            "rerank_top_n": config.retrieval.rerank_top_n,
         },
         "chunk": {
             "chunk_size": config.chunk.chunk_size,
@@ -137,6 +141,17 @@ def _patch_to_env(body: ConfigUpdateRequest) -> tuple[dict[str, str], list[str]]
             updates["RETRIEVAL_TOP_K"] = str(p["top_k"])
         if "score_threshold" in p:
             updates["RETRIEVAL_SCORE_THRESHOLD"] = str(p["score_threshold"])
+        if "rerank_enabled" in p:
+            updates["RERANK_ENABLED"] = "true" if p["rerank_enabled"] else "false"
+        if "rerank_model" in p:
+            name = str(p["rerank_model"]).strip()
+            if not name:
+                raise BadRequestException("rerank_model 不能为空")
+            updates["RERANK_MODEL"] = name
+        if "rerank_candidates" in p:
+            updates["RERANK_CANDIDATES"] = str(p["rerank_candidates"])
+        if "rerank_top_n" in p:
+            updates["RERANK_TOP_N"] = str(p["rerank_top_n"])
 
     if body.chunk is not None:
         patched.append("chunk")

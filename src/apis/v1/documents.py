@@ -132,6 +132,7 @@ async def list_documents(
 @router.post("/scan")
 async def scan_data_dir(
     course_id: str = Form(...),
+    force: bool = Form(False),
     vs: ChromaVectorStore = Depends(get_vector_store),
     ds: SQLiteDocStore = Depends(get_doc_store),
     catalog: CatalogStore = Depends(get_catalog_store),
@@ -145,10 +146,15 @@ async def scan_data_dir(
         course=course["name"],
         college_id=course["college_id"],
         recover_stale=False,
+        force=force,
     )
     return {
         "code": status.HTTP_200_OK,
-        "data": {"message": "扫描完成", "course_id": course_id},
+        "data": {
+            "message": "强制重建完成" if force else "扫描完成",
+            "course_id": course_id,
+            "force": force,
+        },
     }
 
 

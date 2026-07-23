@@ -12,13 +12,15 @@ import {
 } from "../../shared/js/conversations.js";
 
 const ASK_MODE_KEY = "sz.ask_mode";
+const ASK_MODES = new Set(["qa", "concept", "chapter"]);
 
 function getAskMode() {
-  return localStorage.getItem(ASK_MODE_KEY) === "concept" ? "concept" : "qa";
+  const m = localStorage.getItem(ASK_MODE_KEY);
+  return ASK_MODES.has(m) ? m : "qa";
 }
 
 function setAskMode(mode) {
-  localStorage.setItem(ASK_MODE_KEY, mode === "concept" ? "concept" : "qa");
+  localStorage.setItem(ASK_MODE_KEY, ASK_MODES.has(mode) ? mode : "qa");
 }
 
 function escapeHtml(s) {
@@ -71,7 +73,7 @@ function renderTurnHtml(turn) {
   const grounded = turn.grounded;
   const groundedAttr =
     grounded === false ? ` data-grounded="false"` : grounded === true ? ` data-grounded="true"` : "";
-  const mode = turn.mode === "concept" ? "concept" : "qa";
+  const mode = ASK_MODES.has(turn.mode) ? turn.mode : "qa";
   return `<div class="sz-turn" data-mode="${mode}">
     <div class="sz-q"></div>
     <div class="sz-a"${groundedAttr}></div>
@@ -80,12 +82,14 @@ function renderTurnHtml(turn) {
 }
 
 function modeLabel(mode) {
-  return mode === "concept" ? "知识点" : "自由问答";
+  if (mode === "concept") return "知识点";
+  if (mode === "chapter") return "章节概览";
+  return "自由问答";
 }
 
 function paintTurn(node, turn) {
   const q = node.querySelector(".sz-q");
-  const mode = turn.mode === "concept" ? "concept" : "qa";
+  const mode = ASK_MODES.has(turn.mode) ? turn.mode : "qa";
   node.dataset.mode = mode;
   q.replaceChildren();
   const label = document.createElement("span");
@@ -107,10 +111,16 @@ function showAskEmpty() {
   const streamEl = document.getElementById("sz-ask-stream");
   if (!streamEl) return;
   const mode = getAskMode();
-  streamEl.innerHTML =
-    mode === "concept"
-      ? `<p class="sz-ask-empty">选择课程后输入知识点名称<br />将按「定义 → 公式 → 例题」聚合资料</p>`
-      : `<p class="sz-ask-empty">选择课程后提问；左侧可切换历史对话<br />检索已启用向量 + BM25 混合召回</p>`;
+  if (mode === "concept") {
+    streamEl.innerHTML =
+      `<p class="sz-ask-empty">选择课程后输入知识点名称<br />将按「定义 → 公式 → 例题」聚合资料</p>`;
+  } else if (mode === "chapter") {
+    streamEl.innerHTML =
+      `<p class="sz-ask-empty">选择课程后输入章节名，如：第3章 傅里叶变换<br />按章聚合资料生成概览。旧资料请到资料页勾选「强制重建」再扫描</p>`;
+  } else {
+    streamEl.innerHTML =
+      `<p class="sz-ask-empty">选择课程后提问；左侧可切换历史对话<br />检索已启用向量 + BM25 混合召回</p>`;
+  }
 }
 
 function renderConversationTurns(conv) {
@@ -239,11 +249,18 @@ function setupAsk() {
 
   modeEl.value = getAskMode();
   const syncModeUi = () => {
-    const mode = modeEl.value === "concept" ? "concept" : "qa";
+    const mode = ASK_MODES.has(modeEl.value) ? modeEl.value : "qa";
     setAskMode(mode);
-    input.placeholder =
-      mode === "concept" ? "输入知识点名称，如：卷积定理" : "输入问题…";
-    if (submitBtn) submitBtn.textContent = mode === "concept" ? "检索" : "提问";
+    if (mode === "concept") {
+      input.placeholder = "输入知识点名称，如：卷积定理";
+      if (submitBtn) submitBtn.textContent = "检索";
+    } else if (mode === "chapter") {
+      input.placeholder = "输入章节名，如：第3章 傅里叶变换";
+      if (submitBtn) submitBtn.textContent = "概览";
+    } else {
+      input.placeholder = "输入问题…";
+      if (submitBtn) submitBtn.textContent = "提问";
+    }
     if (streamEl.querySelector(".sz-ask-empty")) showAskEmpty();
   };
   modeEl.addEventListener("change", syncModeUi);
@@ -262,7 +279,7 @@ function setupAsk() {
 
     const question = input.value.trim();
     const courseId = getCourseId();
-    const mode = modeEl.value === "concept" ? "concept" : "qa";
+    const mode = ASK_MODES.has(modeEl.value) ? modeEl.value : "qa";
     if (!question || !courseId) {
       toast("需要课程与问题", "error");
       return;
@@ -302,11 +319,15 @@ function setupAsk() {
           if (!answer) {
             live.textContent =
               ev.phase === "retrieving"
-                ? "检索中…"
+                ? mode === "chapter"
+                  ? "聚合章节资料…"
+                  : "检索中…"
                 : ev.phase === "generating"
                   ? mode === "concept"
                     ? "聚合生成中…"
-                    : "生成中…"
+                    : mode === "chapter"
+                      ? "生成概览中…"
+                      : "生成中…"
                   : "";
           }
         } else if (ev.type === "delta") {

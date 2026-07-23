@@ -13,6 +13,7 @@ const GROUPS = [
   {
     id: "embedding",
     title: "Embedding",
+    desc: "local：完整 HuggingFace 模型 ID（如 sentence-transformers/all-MiniLM-L6-v2、BAAI/bge-small-zh-v1.5）。openai：远程 Embedding API。",
     fields: [
       {
         key: "provider",
@@ -20,16 +21,20 @@ const GROUPS = [
         type: "select",
         options: ["local", "openai"],
       },
-      { key: "model", label: "模型" },
-      { key: "base_url", label: "Base URL" },
-      { key: "api_key", label: "API Key", secret: true },
-      { key: "timeout", label: "超时", type: "number" },
+      {
+        key: "model",
+        label: "模型",
+        placeholder: "sentence-transformers/all-MiniLM-L6-v2",
+      },
+      { key: "base_url", label: "Base URL", remoteOnly: true },
+      { key: "api_key", label: "API Key", secret: true, remoteOnly: true },
+      { key: "timeout", label: "超时", type: "number", remoteOnly: true },
     ],
   },
   {
     id: "retrieval",
     title: "检索",
-    desc: "问答默认走向量 + BM25 → RRF 混合召回；低于阈值则拒答。",
+    desc: "问答默认走向量 + BM25 → RRF；可开 BGE 精排。低于阈值则拒答（精排开启时阈值为 sigmoid(logit)）。",
     fields: [
       {
         key: "top_k",
@@ -41,6 +46,25 @@ const GROUPS = [
         label: "拒答分数阈值",
         type: "number",
         step: "0.01",
+      },
+      {
+        key: "rerank_enabled",
+        label: "启用 BGE 精排",
+        type: "checkbox",
+      },
+      {
+        key: "rerank_model",
+        label: "精排模型",
+      },
+      {
+        key: "rerank_candidates",
+        label: "精排候选池大小",
+        type: "number",
+      },
+      {
+        key: "rerank_top_n",
+        label: "精排保留条数 (0=同 top_k)",
+        type: "number",
       },
     ],
   },
@@ -217,6 +241,10 @@ function renderMain() {
   const group = GROUPS.find((g) => g.id === activeId) || GROUPS[0];
   if (group.id === "llm") {
     renderLlmMain(group);
+    return;
+  }
+  if (group.id === "embedding") {
+    renderEmbeddingMain(group);
     return;
   }
   const data = cfg[group.id] || {};
@@ -444,6 +472,222 @@ async function addLlmProvider(form) {
   }
 }
 
+function renderEmbeddingMain(group) {
+  const data = cfg.embedding || {};
+  const provider = data.provider || "local";
+  const isLocal = provider === "local";
+
+  mainEl.innerHTML = `
+    <header class="sz-config-header">
+      <h2>${esc(group.title)}</h2>
+      <p class="sz-muted">${esc(group.desc || group.id)}</p>
+    </header>
+    <form class="sz-config-form" id="sz-config-form" autocomplete="off">
+      ${group.fields
+        .filter((f) => !f.remoteOnly || !isLocal)
+        .map((f) => fieldHtml(f, data))
+        .join("")}
+      <div class="sz-config-actions">
+        <button type="submit" class="sz-btn sz-btn-primary" ${
+          cfg.meta?.env_writable === false ? "disabled title=\"env 不可写\"" : ""
+        }>保存</button>
+        <button type="button" class="sz-btn" id="sz-config-reset">重置</button>
+        <button type="button" class="sz-btn" id="sz-emb-warmup">
+          ${isLocal ? "拉取并加载模型" : "探测连通性"}
+        </button>
+      </div>
+    </form>
+    <div class="sz-emb-warmup" id="sz-emb-warmup-panel" hidden>
+      <div class="sz-upload-progress" id="sz-emb-progress">
+        <div class="sz-upload-progress-meta">
+          <span class="sz-upload-progress-label" id="sz-emb-progress-label">待命</span>
+          <span class="sz-upload-progress-pct" id="sz-emb-progress-pct"></span>
+        </div>
+        <div class="sz-upload-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="sz-emb-progress-track">
+          <div class="sz-upload-progress-bar" id="sz-emb-progress-bar"></div>
+        </div>
+      </div>
+      <p class="sz-muted sz-emb-warmup-hint" id="sz-emb-warmup-hint"></p>
+    </div>
+    <div class="sz-config-effects" id="sz-config-effects" hidden></div>
+  `;
+
+  const form = document.getElementById("sz-config-form");
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    save(group);
+  };
+  document.getElementById("sz-config-reset").onclick = () => renderMain();
+  const providerEl = form.elements.namedItem("provider");
+  if (providerEl) {
+    providerEl.onchange = () => {
+      const next = providerEl.value;
+      if (cfg.embedding) cfg.embedding.provider = next;
+      renderEmbeddingMain(group);
+    };
+  }
+  document.getElementById("sz-emb-warmup").onclick = () => startEmbeddingWarmup(isLocal);
+  if (cfg.settings_effects) showEffects(cfg.settings_effects);
+  refreshEmbeddingStatus();
+}
+
+let _embPollTimer = null;
+
+function setEmbProgress({ phase, percent, message, error }) {
+  const panel = document.getElementById("sz-emb-warmup-panel");
+  const root = document.getElementById("sz-emb-progress");
+  const bar = document.getElementById("sz-emb-progress-bar");
+  const label = document.getElementById("sz-emb-progress-label");
+  const pct = document.getElementById("sz-emb-progress-pct");
+  const hint = document.getElementById("sz-emb-warmup-hint");
+  const track = document.getElementById("sz-emb-progress-track");
+  const btn = document.getElementById("sz-emb-warmup");
+  if (!panel || !root || !bar) return;
+
+  panel.hidden = false;
+  const running = phase === "running";
+  if (btn) btn.disabled = running;
+
+  if (label) label.textContent = message || (phase === "ok" ? "已就绪" : "…");
+  if (hint) {
+    hint.textContent =
+      error ||
+      (phase === "ok"
+        ? "模型已就绪，可在资料页扫描入库。"
+        : phase === "running"
+          ? "首次拉取可能较大，请保持网络畅通。"
+          : "");
+    hint.classList.toggle("sz-warn", !!error);
+  }
+
+  const known = percent != null && Number.isFinite(Number(percent));
+  root.classList.toggle("is-indeterminate", running && !known);
+  if (known) {
+    const p = Math.max(0, Math.min(100, Number(percent)));
+    bar.style.width = `${p}%`;
+    if (pct) pct.textContent = `${Math.round(p)}%`;
+    if (track) {
+      track.setAttribute("aria-valuenow", String(Math.round(p)));
+    }
+  } else if (phase === "ok") {
+    bar.style.width = "100%";
+    if (pct) pct.textContent = "100%";
+  } else if (running) {
+    bar.style.width = "40%";
+    if (pct) pct.textContent = "…";
+  } else if (phase === "error") {
+    bar.style.width = "0%";
+    if (pct) pct.textContent = "";
+  } else {
+    bar.style.width = "0%";
+    if (pct) pct.textContent = "";
+  }
+}
+
+async function refreshEmbeddingStatus() {
+  try {
+    const data = await apiGet("/embedding/status");
+    const w = data.warmup || {};
+    if (w.phase && w.phase !== "idle") {
+      setEmbProgress(w);
+    } else if (data.status === "ok") {
+      setEmbProgress({
+        phase: "ok",
+        percent: 100,
+        message: `已就绪 · ${data.model || ""}`,
+        error: null,
+      });
+    }
+    if (w.phase === "running") {
+      scheduleEmbPoll();
+    }
+  } catch {
+    /* 状态接口失败时不打扰 */
+  }
+}
+
+function scheduleEmbPoll() {
+  if (_embPollTimer) return;
+  _embPollTimer = setInterval(async () => {
+    try {
+      const data = await apiGet("/embedding/status");
+      const w = data.warmup || {};
+      const done =
+        data.status === "ok" || w.phase === "ok" || w.phase === "error";
+      if (data.status === "ok") {
+        setEmbProgress({
+          phase: "ok",
+          percent: 100,
+          message: w.message || `已就绪 · ${data.model || ""}`,
+          error: null,
+        });
+      } else {
+        setEmbProgress(w);
+      }
+      if (done) {
+        clearInterval(_embPollTimer);
+        _embPollTimer = null;
+        if (data.status === "ok" || w.phase === "ok") {
+          toast("Embedding 已就绪", "success");
+        }
+        if (w.phase === "error" && data.status !== "ok") {
+          toast(w.error || "加载失败", "error");
+        }
+      }
+    } catch (err) {
+      clearInterval(_embPollTimer);
+      _embPollTimer = null;
+      setEmbProgress({
+        phase: "error",
+        percent: null,
+        message: "轮询失败",
+        error: err.message || "轮询失败",
+      });
+    }
+  }, 300);
+}
+
+async function startEmbeddingWarmup(isLocal) {
+  const group = GROUPS.find((g) => g.id === "embedding");
+  if (group && cfg.meta?.env_writable !== false) {
+    try {
+      await save(group, { quiet: true });
+    } catch {
+      return;
+    }
+  }
+  setEmbProgress({
+    phase: "running",
+    percent: isLocal ? 0 : null,
+    message: isLocal ? "开始拉取…" : "探测中…",
+    error: null,
+  });
+  try {
+    const data = await apiPost("/embedding/warmup", {});
+    const w = data.warmup || {};
+    if (data.status === "ok" || w.phase === "ok") {
+      setEmbProgress({
+        phase: "ok",
+        percent: 100,
+        message: w.message || `已就绪 · ${data.model || ""}`,
+        error: null,
+      });
+      toast("向量化已就绪", "success");
+      return;
+    }
+    setEmbProgress(w);
+    scheduleEmbPoll();
+  } catch (err) {
+    setEmbProgress({
+      phase: "error",
+      percent: null,
+      message: "启动失败",
+      error: err.message || "启动失败",
+    });
+    toast(err.message || "拉取失败", "error");
+  }
+}
+
 function fieldHtml(f, data) {
   const id = `field-${f.key}`;
   if (f.type === "checkbox") {
@@ -480,14 +724,16 @@ function fieldHtml(f, data) {
   const type = f.type === "number" ? "number" : "text";
   const step = f.step ? ` step="${esc(f.step)}"` : "";
   const val = data[f.key] ?? "";
+  const ph = f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : "";
   return `
     <label class="sz-field">
       <span class="sz-field-label">${esc(f.label)}</span>
-      <input type="${type}" id="${id}" name="${f.key}" value="${esc(String(val))}"${step} />
+      <input type="${type}" id="${id}" name="${f.key}" value="${esc(String(val))}"${step}${ph} />
     </label>`;
 }
 
-async function save(group) {
+async function save(group, opts = {}) {
+  const quiet = !!opts.quiet;
   const form = document.getElementById("sz-config-form");
   const payload = {};
 
@@ -514,26 +760,31 @@ async function save(group) {
       v = Number(v);
       if (Number.isNaN(v)) {
         toast(`${f.label} 不是有效数字`, "error");
-        return;
+        throw new Error("invalid number");
       }
     }
     payload[f.key] = v;
   }
 
   if (!Object.keys(payload).length) {
-    toast("没有可保存的更改", "error");
+    if (!quiet) toast("没有可保存的更改", "error");
     return;
   }
 
   try {
     const data = await apiPatch("/config", { [group.id]: payload });
     cfg = data;
-    toast("已保存", "success");
-    renderNav();
-    renderMain();
-    if (data.settings_effects) showEffects(data.settings_effects);
+    if (!quiet) {
+      toast("已保存", "success");
+      renderNav();
+      renderMain();
+      if (data.settings_effects) showEffects(data.settings_effects);
+    } else if (group.id === "embedding" && cfg.embedding) {
+      Object.assign(cfg.embedding, payload);
+    }
   } catch (err) {
     toast(err.message || "保存失败", "error");
+    throw err;
   }
 }
 

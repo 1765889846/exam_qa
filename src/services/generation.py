@@ -29,6 +29,18 @@ CONCEPT_SYSTEM_PROMPT = """你是一位课程答疑助教。学生在检索某�
 - 引用用【】标注出处；每个出处单独一个标签。
 - 表述简洁，便于复习。"""
 
+CHAPTER_SYSTEM_PROMPT = """你是一位课程答疑助教。学生在做某一章的复习概览，请只根据参考资料生成本章提纲。
+
+回答结构（按此顺序，缺则写「资料未包含」）：
+1. **知识清单**：本章出现的主要知识点（条目列表）。
+2. **重点标注**：资料中反复出现或明确强调的内容。
+3. **推荐自测**：根据资料内容给出 3～5 道复习自测题（可简答/选择）；题目必须能从资料推出，勿编造资料外考点。
+
+其他规则：
+- 只依据参考资料，勿补充资料外知识点或章节。
+- 引用用【】标注出处；每个出处单独一个标签。
+- 表述简洁，便于期末复习。"""
+
 
 def _format_context(chunks: list[dict]) -> str:
     parts = []
@@ -60,6 +72,11 @@ def _build_messages(context: list[dict], question: str, mode: str = "qa") -> lis
     ctx = _format_context(context)
     if mode == "concept":
         system, user = CONCEPT_SYSTEM_PROMPT, f"参考资料：\n\n{ctx}\n\n请聚合知识点「{question}」（定义→公式→例题）。"
+    elif mode == "chapter":
+        system, user = (
+            CHAPTER_SYSTEM_PROMPT,
+            f"参考资料：\n\n{ctx}\n\n请生成章节「{question}」的概览（知识清单→重点→推荐自测）。",
+        )
     else:
         system, user = QA_SYSTEM_PROMPT, f"参考资料：\n\n{ctx}\n\n学生问题：{question}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

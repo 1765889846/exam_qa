@@ -20,15 +20,16 @@
 
 | 能力 | 说明 |
 |:-----|:-----|
-| 自由问答 | `mode=qa`，混合检索（向量 + BM25 → RRF） |
+| 自由问答 | `mode=qa`，混合检索（向量 + BM25 → RRF；可选 BGE 精排） |
 | 知识点 | `mode=concept`，更大 top_k，按「定义 → 公式 → 例题」聚合 |
+| 章节概览 | `mode=chapter`，按 `chapter` 元数据聚合（不走语义检索） |
 | 拒答 | 最高分低于阈值 → `grounded: false`，固定文案，禁止无引用硬编 |
 | 多课隔离 | 一切检索 / 上传 / 删除都带 `course_id` |
 | 资料格式 | PDF · TXT · MD · DOC · DOCX · PPTX（扫描 PDF 可选 OCR） |
 
 ## Quick Start
 
-需要 Python ≥ 3.11、[uv](https://docs.astral.sh/uv/)，以及 OpenAI 兼容的对话 API（`LLM_API_KEY`）。扫描版 PDF 可选 [Tesseract](https://github.com/tesseract-ocr/tesseract)（`eng` / `chi_sim`）。旧版 `.doc` 建议装 [LibreOffice](https://www.libreoffice.org/)。
+需要 Python ≥ 3.11、[uv](https://docs.astral.sh/uv/)，以及 OpenAI 兼容的对话 API（`LLM_API_KEY`）。扫描版 PDF 可选 [Tesseract](https://github.com/tesseract-ocr/tesseract)（`eng` / `chi_sim`）。旧版 `.doc` 需 [LibreOffice](https://www.libreoffice.org/) 或本机 Microsoft Word。
 
 ```bash
 cp .env.example .env   # 填写 LLM_API_KEY，或启动后在设置页注册模型
@@ -38,13 +39,13 @@ uv run exam            # → http://127.0.0.1:8787
 
 | 地址 | 用途 |
 |:-----|:-----|
-| [`/sz/`](http://127.0.0.1:8787/sz/) | 对话（自由问答 / 知识点） |
-| [`/sz-docs/`](http://127.0.0.1:8787/sz-docs/) | 资料上传 / 扫描 |
-| [`/sz-cfg/`](http://127.0.0.1:8787/sz-cfg/) | 设置（LLM、检索阈值、OCR…） |
+| [`/sz/`](http://127.0.0.1:8787/sz/) | 对话（自由问答 / 知识点 / 章节概览） |
+| [`/sz-docs/`](http://127.0.0.1:8787/sz-docs/) | 资料上传 / 扫描（可选强制重建） |
+| [`/sz-cfg/`](http://127.0.0.1:8787/sz-cfg/) | 设置（LLM、检索与 BGE 精排、OCR…） |
 | [`/docs`](http://127.0.0.1:8787/docs) | OpenAPI |
 | [`/api/v1/health`](http://127.0.0.1:8787/api/v1/health) | 健康检查 |
 
-启动时会校验配置，并扫描 `data/knowledge/` 里尚未入库的文件（默认课）。
+启动时会校验配置；资料入库请在资料页手动上传或扫描（启动不再自动扫库）。
 
 ## Commands
 
@@ -55,6 +56,7 @@ uv run exam            # → http://127.0.0.1:8787
 | `DEBUG=true uv run exam` | 调试模式 |
 | `uv run pytest -q` | 单元测试 |
 | `uv run pytest -q -m integration` | 集成测试（需 Embedding 与 LLM） |
+| `uv run python -m tests.eval.run_retrieval_eval --chroma ./storage/chroma` | 离线 Recall@K / MRR |
 | `uv add <package>` | 添加依赖 |
 
 ```bash
@@ -108,21 +110,27 @@ flowchart TB
 ```mermaid
 flowchart LR
   subgraph ingest["入库"]
-    A1["上传 / 扫描"] --> A2["parsing"] --> A3["分块"] --> A4["embedding"] --> A5[("Chroma + SQLite")]
+    A1["上传 / 扫描 / 强制重建"] --> A2["parsing"] --> A3["分块 + chapter"] --> A4["embedding"] --> A5[("Chroma + SQLite")]
   end
 
   subgraph ask["问答"]
-    B1["提问 + course_id"] --> B2["向量 + BM25 → RRF"] --> B3{"score ≥ 阈值?"}
-    B3 -->|是| B4["LLM + citations"]
-    B3 -->|否| B5["拒答 · grounded: false"]
+    B1["提问 + course_id + mode"] --> B2{"mode?"}
+    B2 -->|qa / concept| B3["向量 + BM25 → RRF"]
+    B3 --> B4["可选 BGE 精排"]
+    B4 --> B5{"score ≥ 阈值?"}
+    B2 -->|chapter| B6["按 chapter 元数据聚合"]
+    B5 -->|是| B7["LLM + citations"]
+    B5 -->|否| B8["拒答 · grounded: false"]
+    B6 --> B7
   end
 ```
 
 | 模块 | 职责 |
 |:-----|:-----|
-| `ingestion` / `parsing` | 解析分块入库；PDF 可 OCR |
-| `retrieval` | 向量 + BM25 → RRF，按课过滤 |
-| `query` / `generation` | `qa` / `concept` 编排与 prompt |
+| `ingestion` / `parsing` | 解析分块入库；写入 `chapter`；PDF 可 OCR |
+| `retrieval` / `rerank` | 向量 + BM25 → RRF；可选 BGE CrossEncoder 精排 |
+| `query` / `generation` | `qa` / `concept` / `chapter` 编排与 prompt |
+| `eval_metrics` | 离线 Recall@K / MRR |
 | `embedding` / `llm` | 本地或 OpenAI 兼容 API |
 | `storage/` | Chroma 向量 · SQLite 元数据与目录 |
 
@@ -170,7 +178,11 @@ exam-rag/
 | 参数 | 默认 | 含义 |
 |:-----|:-----|:-----|
 | `top_k` | 5 | RRF 融合后保留条数；`concept` 默认更大 |
-| `score_threshold` | 0.25 | 低于此分拒答 |
+| `score_threshold` | 0.25 | 低于此分拒答；精排开启时作用于 sigmoid(logit) |
+| `RERANK_ENABLED` | false | 是否启用 BGE CrossEncoder 精排 |
+| `RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | 精排模型（sentence-transformers） |
+| `RERANK_CANDIDATES` | 20 | 精排前候选池大小 |
+| `RERANK_TOP_N` | 0（=top_k） | 精排后保留条数 |
 | `chunk_size` | 800 | 分块字符数 |
 | `chunk_overlap` | 50 | 相邻块重叠 |
 
@@ -187,16 +199,21 @@ exam-rag/
 | `GET` / `POST` | `/api/v1/llm-providers` | 列出 / 注册模型 |
 | `POST` | `/api/v1/llm-providers/active` | 切换当前模型 |
 | `DELETE` | `/api/v1/llm-providers/{name}` | 删除注册项 |
-| `POST` | `/api/v1/embedding/warmup` | 预热 Embedding |
+| `POST` | `/api/v1/embedding/warmup` | 后台拉取/加载本地模型或探测远程 API |
+| `GET` | `/api/v1/embedding/status` | Embedding 就绪状态与拉取进度（`warmup.percent`） |
 | `GET` | `/api/v1/colleges` | 学院 |
 | `GET` | `/api/v1/courses` | 课程（可选 `?college_id=`） |
 | `POST` | `/api/v1/documents` | 上传（Form 必填 `course_id`） |
 | `GET` | `/api/v1/documents` | 列表（`?course_id=`） |
-| `POST` | `/api/v1/documents/scan` | 扫描 knowledge 目录 |
+| `POST` | `/api/v1/documents/scan` | 扫描 knowledge（Form：`course_id`；可选 `force=true` 强制重建） |
 | `DELETE` | `/api/v1/documents/{doc_id}` | 删除（`?course_id=`） |
-| `POST` | `/api/v1/ask` | 问答（`course_id`；`mode=qa\|concept`） |
+| `POST` | `/api/v1/ask` | 问答（`course_id`；`mode=qa\|concept\|chapter`） |
 
 默认课：`course-default`。同一物理文件不会跨课改归属。
+
+**章节概览（`mode=chapter`）**：依赖入库时写入的 `chapter` 元数据。旧库请到资料页勾选「强制重建」再扫描，或重新上传；普通扫描仅在文件 mtime 变更时重入库。
+
+**BGE 精排**：设置页打开「启用 BGE 精排」后，对混合召回结果做 CrossEncoder 重排；默认关闭（避免首启强制下载模型）。
 
 <details>
 <summary>问答示例</summary>
@@ -220,6 +237,18 @@ POST /api/v1/ask
   "course_id": "course-default",
   "mode": "concept",
   "stream": true
+}
+```
+
+章节概览（知识清单 → 重点 → 推荐自测；不走语义检索）：
+
+```json
+POST /api/v1/ask
+{
+  "question": "第3章 傅里叶变换",
+  "course_id": "course-default",
+  "mode": "chapter",
+  "stream": false
 }
 ```
 
@@ -247,7 +276,8 @@ POST /api/v1/ask
 | P0 入库 / 问答 / 拒答 / WebUI | 已实现 |
 | P1-A 学院·课程隔离 | 已实现 |
 | P1-B `mode=concept` · 混合检索 · PPT | 已实现 |
-| P2 章节概览 · Reranker · 离线评估 | 未做 |
+| P2-A 离线评估 · BGE 精排 · `mode=chapter` | 已实现（精排默认关） |
+| P2-B Agent / P3 平台化 | 未做 |
 
 ## Development
 

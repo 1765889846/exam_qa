@@ -1,59 +1,58 @@
-"""POST /api/v1/embedding/warmup — 手动加载本地模型或探测远程 API。"""
+"""Embedding 预热 / 状态：本地模型拉取进度 + 远程探测。"""
+
+from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from starlette import status
 
-from src.config import config
 from src.dependencies import get_embedding_client
-from src.exceptions import AppException
-from src.services.embedding import EmbeddingClient
+from src.exceptions import AppException, BadRequestException
+from src.services.embedding import (
+    EmbeddingClient,
+    build_embedding_status,
+    start_warmup_background,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["embedding"])
 
 
-@router.post("/embedding/warmup")
-async def warmup_embedding(embedding: EmbeddingClient = Depends(get_embedding_client)):
-    """加载本地 Embedding 模型，或探测远程 API 连通性。"""
-    if embedding.status() == "ok":
-        return {
-            "code": status.HTTP_200_OK,
-            "data": {
-                "status": "ok",
-                "provider": embedding.provider,
-                "model": embedding.model,
-                "message": "向量化已就绪",
-            },
-        }
+@router.get("/embedding/status")
+async def embedding_status(embedding: EmbeddingClient = Depends(get_embedding_client)):
+    return {"code": status.HTTP_200_OK, "data": build_embedding_status(embedding)}
 
+
+@router.post("/embedding/warmup")
+async def warmup_embedding(
+    request: Request,
+    embedding: EmbeddingClient = Depends(get_embedding_client),
+):
+    """后台拉取/加载本地模型，或探测远程 API；轮询 GET /embedding/status 看进度。"""
     if embedding.status() == "unavailable":
-        raise AppException(
-            "Embedding 未配置：请设置 EMBEDDING_API_KEY 或切换为本地模型",
-            status_code=400,
+        raise BadRequestException(
+            "Embedding 未配置：请设置 EMBEDDING_API_KEY 或切换为本地模型"
         )
 
+    data = build_embedding_status(embedding)
+    if data["status"] == "ok":
+        return {
+            "code": status.HTTP_200_OK,
+            "data": {**data, "message": "向量化已就绪"},
+        }
+
     try:
-        embedding.warmup()
+        start_warmup_background(embedding)
     except Exception as e:
-        logger.exception("Embedding 加载失败")
+        logger.exception("Embedding 启动加载失败")
         raise AppException(f"Embedding 加载失败: {e}", status_code=500) from e
 
-    if embedding.status() != "ok":
-        raise AppException("Embedding 加载后仍未就绪", status_code=500)
-
-    logger.info(
-        "Embedding 手动加载完成: provider=%s model=%s",
-        config.embedding.provider,
-        config.embedding.model,
-    )
+    request.app.state.embedding_health = "loading"
     return {
         "code": status.HTTP_200_OK,
         "data": {
-            "status": "ok",
-            "provider": embedding.provider,
-            "model": embedding.model,
-            "message": "向量化已就绪",
+            **build_embedding_status(embedding),
+            "message": "已开始拉取/加载，请轮询 /embedding/status",
         },
     }

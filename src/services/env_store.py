@@ -24,7 +24,11 @@ def ensure_env_file() -> bool:
     if ENV_PATH.exists():
         return False
     if ENV_EXAMPLE_PATH.exists():
-        ENV_PATH.write_text(ENV_EXAMPLE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        ENV_PATH.write_text(
+            ENV_EXAMPLE_PATH.read_text(encoding="utf-8"),
+            encoding="utf-8",
+            newline="\n",
+        )
         _env_created = True
         return True
     return False
@@ -80,4 +84,4 @@ def write_env_updates(updates: dict[str, str]) -> None:
         if key not in seen:
             output.append(f"{key}={_format_env_value(value)}\n")
 
-    ENV_PATH.write_text("".join(output), encoding="utf-8")
+    ENV_PATH.write_text("".join(output), encoding="utf-8", newline="\n")

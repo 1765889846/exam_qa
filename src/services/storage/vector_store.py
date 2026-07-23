@@ -107,6 +107,7 @@ class ChromaVectorStore:
                 "course_id": course_id,
                 "college_id": chunk.get("college_id", ""),
                 "page": chunk.get("page") if chunk.get("page") is not None else -1,
+                "chapter": str(chunk.get("chapter") or ""),
             })
 
         def _do_upsert() -> None:
@@ -189,6 +190,7 @@ class ChromaVectorStore:
                     "course_id": meta.get("course_id", ""),
                     "college_id": meta.get("college_id", ""),
                     "page": page,
+                    "chapter": meta.get("chapter") or "",
                 },
             })
 
@@ -279,9 +281,57 @@ class ChromaVectorStore:
                     "course_id": meta.get("course_id", ""),
                     "college_id": meta.get("college_id", ""),
                     "page": page,
+                    "chapter": meta.get("chapter") or "",
                 },
             })
         return hits
+
+    def list_chapters(self, course_id: str) -> list[str]:
+        """本课已入库的非空 chapter 名（去重、排序）。"""
+        corpus = self.get_by_course_id(course_id)
+        return sorted(
+            {
+                (h.get("metadata") or {}).get("chapter") or ""
+                for h in corpus
+                if (h.get("metadata") or {}).get("chapter")
+            }
+        )
+
+    @staticmethod
+    def _sort_chapter_hits(hits: list[dict]) -> list[dict]:
+        def _key(h: dict):
+            meta = h.get("metadata") or {}
+            return (
+                str(meta.get("source_file") or ""),
+                int(meta.get("chunk_index") or 0),
+            )
+
+        return sorted(hits, key=_key)
+
+    def get_by_chapter(self, course_id: str, chapter: str) -> list[dict]:
+        """按课聚合章节；先精确，再 query⊂chapter 模糊（禁止 chapter⊂query，避免第9章误匹配第99章）。"""
+        if not course_id or not course_id.strip():
+            raise ValueError("get_by_chapter 必须提供 course_id")
+        key = (chapter or "").strip()
+        if not key:
+            return []
+        corpus = self.get_by_course_id(course_id)
+        exact = [
+            h
+            for h in corpus
+            if ((h.get("metadata") or {}).get("chapter") or "") == key
+        ]
+        if exact:
+            return self._sort_chapter_hits(exact)
+        key_l = key.lower()
+        if len(key_l) < 2:
+            return []
+        fuzzy = [
+            h
+            for h in corpus
+            if key_l in ((h.get("metadata") or {}).get("chapter") or "").lower()
+        ]
+        return self._sort_chapter_hits(fuzzy)
 
     def delete_by_doc_id(self, doc_id: str) -> None:
         try:

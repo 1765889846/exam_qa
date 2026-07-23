@@ -1,8 +1,9 @@
 # 05 Web UI 规划
 
-> **状态（2026-07）**：已定稿。废弃 React/Vite `workbench/`；手写 HTML/CSS/JS，三挂载点 `/sz`（对话）、`/sz-docs`（资料）、`/sz-cfg`（设置）。  
+> **状态（2026-07）**：已定稿并随 P2-A 同步。废弃 React/Vite `workbench/`；手写 HTML/CSS/JS，三挂载点 `/sz`（对话）、`/sz-docs`（资料）、`/sz-cfg`（设置）。  
 > 产品：溯知（exam-rag）· 据源而答的课程资料问答  
-> **关联**：[01-产品边界](./01-产品边界.md) · [02-模块架构](./02-模块架构.md) · [03-工程规范](./03-工程规范.md) · [04-后续演进规范](./04-后续演进规范.md)
+> **关联**：[01-产品边界](./01-产品边界.md) · [02-模块架构](./02-模块架构.md) · [03-工程规范](./03-工程规范.md) · [04-后续演进规范](./04-后续演进规范.md)  
+> **本轮 UI 契约**：`mode=chapter` · 资料「强制重建」· 设置页 BGE 精排开关
 
 ---
 
@@ -65,16 +66,17 @@
 | 响应 | `{code, data}` / `{code, message}` |
 | 健康 | `GET /api/v1/health` → 顶栏状态点 |
 | 目录 | `GET /api/v1/colleges`、`GET /api/v1/courses`；`course_id` 必填并持久化 `sz.course_id` |
-| 资料 | `POST/GET/DELETE /api/v1/documents`、`POST /api/v1/documents/scan` |
-| 问答 | `POST /api/v1/ask`（`mode=qa|concept`；`stream=true` → SSE）；展示 citations、KaTeX（拒答看 `grounded`） |
-| 配置 | `GET/PATCH /api/v1/config`；LLM 注册/切换：`/api/v1/llm-providers` |
+| 资料 | `POST/GET/DELETE /api/v1/documents`、`POST /api/v1/documents/scan`（Form：`course_id`；可选 `force=true`） |
+| 问答 | `POST /api/v1/ask`（`mode=qa|concept|chapter`；`stream=true` → SSE）；展示 citations、KaTeX（拒答看 `grounded`） |
+| 配置 | `GET/PATCH /api/v1/config`（含检索精排字段）；LLM 注册/切换：`/api/v1/llm-providers` |
 
 ### 2.3 启动
 
 ```bash
 uv run exam
-# 浏览器：http://127.0.0.1:8000/sz/
-# 设置：  http://127.0.0.1:8000/sz-cfg/
+# 浏览器：http://127.0.0.1:8787/sz/
+# 资料：  http://127.0.0.1:8787/sz-docs/
+# 设置：  http://127.0.0.1:8787/sz-cfg/
 ```
 
 无 Node 安装/构建步骤。改静态文件后刷新即可（必要时硬刷新）。
@@ -116,18 +118,29 @@ uv run exam
 
 - 左：会话历史（新对话 / 切换 / 删除；`localStorage` 按 `course_id` 隔离）
 - 右：回答区（独立滚动，KaTeX + citations）+ 输入区（底部固定）
-- 输入区含 **模式** `qa`（自由问答）/ `concept`（知识点，定义→公式→例题）；持久化 `sz.ask_mode`
+- 输入区含 **模式**（持久化 `sz.ask_mode`）：
+
+| mode | 文案 | 输入提示 | 行为摘要 |
+|------|------|----------|----------|
+| `qa` | 自由问答 | 输入问题… | 混合检索（可选精排）→ 生成 |
+| `concept` | 知识点 | 如：卷积定理 | 更大 top_k → 定义/公式/例题 |
+| `chapter` | 章节概览 | 如：第3章 傅里叶变换 | 按 `chapter` 聚合，不走语义检索 |
+
+- 章节模式空状态须提示：旧资料到资料页勾选「强制重建」再扫描
 - 分区各自 `overflow`，互不带动整页滚动
 
 **资料 `/sz-docs`**
 
-- 上传区（进度条；接受 PDF/TXT/MD/DOC/DOCX/**PPTX**）+ 文档列表（独立滚动）+ 删除 / 扫描
+- 上传区（进度条；接受 PDF/TXT/MD/DOC/DOCX/**PPTX**）+ 文档列表（独立滚动）+ 删除
+- **扫描目录**：Form 带 `course_id`；勾选「强制重建」时附带 `force=true`（确认框后提交），用于补写 `chapter` 等元数据；普通扫描仅处理新文件 / mtime 变更 / failed
+- 侧栏/提示文案须说明：章节概览依赖强制重建或重新上传
 
 **设置 `/sz-cfg`**
 
 - 左：配置分组列表（可搜索，独立滚动）
 - 右：当前分组表单 + 保存 / 重置（独立滚动）
-- **模型管理**：表格式注册表（名称 / 格式 / 模型 / Base URL / Key / 操作）+ 信息条 +「+ 添加模型」折叠表单；控件统一 `border-radius: var(--sz-radius-md)`（约 12px），徽章圆角 pill；色系仍用溯知青绿 tokens，不引入 Ant Design / React
+- **模型管理**：表格式注册表 +「+ 添加模型」；色系用溯知青绿 tokens
+- **检索**分组须含精排字段（见 §5）
 
 ---
 
@@ -172,9 +185,9 @@ exam/
 |---|---|---|---|
 | `shell` | `shared/js/shell.js` | 顶栏、主题、health 轮询、课程选择、页间导航 | `api.js`、`theme.js` |
 | `conversations` | `shared/js/conversations.js` | 本地会话 CRUD（按 course_id） | — |
-| `workbench` | `sz/js/workbench.js` | 会话历史 UI、问答 SSE、citations、KaTeX | `shared/*` |
-| `docs` | `sz-docs/js/docs.js` | 资料 CRUD/scan、上传进度 | `shared/*` |
-| `settings` | `sz-cfg/js/settings.js` | 配置分组 UI、表单、PATCH、脱敏密钥 | `shared/*` |
+| `workbench` | `sz/js/workbench.js` | 会话历史；`qa|concept|chapter`；问答 SSE、citations、KaTeX | `shared/*` |
+| `docs` | `sz-docs/js/docs.js` | 资料 CRUD；扫描可传 `force`；上传进度 | `shared/*` |
+| `settings` | `sz-cfg/js/settings.js` | 配置分组（含 BGE 精排）；PATCH、脱敏密钥 | `shared/*` |
 | `api` | `shared/js/api.js` | 统一请求与错误 | — |
 
 ### 设置页全量可写分组（对应 `PATCH /api/v1/config`）
@@ -182,8 +195,8 @@ exam/
 | 分组 | 字段来源 |
 |---|---|
 | 模型管理 | 表格式注册表增删/切换（`llm-providers`）+ timeout；活跃项同步写入 `.env` 的 `LLM_*` / `LLM_PROVIDER` |
-| Embedding | provider、model、base_url、api_key、timeout |
-| 检索 | top_k、score_threshold（后端固定混合检索：向量 + BM25 → RRF） |
+| Embedding | provider、model、base_url、api_key、timeout；**local 时「拉取并加载模型」**（`POST /embedding/warmup` + 轮询 `GET /embedding/status` 进度条） |
+| 检索 | top_k、score_threshold、**rerank_enabled**、**rerank_model**、**rerank_candidates**、**rerank_top_n**（0=同 top_k；精排默认关；开启后阈值作用于 sigmoid(logit)） |
 | 分块 | chunk_size、chunk_overlap |
 | 解析 / OCR | pdf_use_ocr、pdf_force_ocr、pdf_ocr_language |
 | 代理 | url、no_proxy、**enabled**（可写；关闭后仍保留 URL，出站直连） |
@@ -253,13 +266,13 @@ exam/
 ### 验证清单
 
 ```
-- [ ] GET / → 302/重定向到 /sz/
-- [ ] /sz/ · /sz-docs/ · /sz-cfg/ 顶栏互链；主题跟随系统且可覆盖
-- [ ] 对话页：新对话 / 历史切换 / 删除；`mode=qa|concept`；问答 SSE + citations + KaTeX
-- [ ] 资料页：选课 → 上传（含 PPTX）→ 列表 → 扫描
-- [ ] grounded: false 拒答态（样式提示即可，无「有据可查」徽章）
-- [ ] /sz-cfg/ 各组保存成功；密钥不回明文；env 不可写时有提示
-- [ ] ≤768px 无横向撑破、分区仍可独立滚动
+- [x] GET / → 302/重定向到 /sz/
+- [x] /sz/ · /sz-docs/ · /sz-cfg/ 顶栏互链；主题跟随系统且可覆盖
+- [x] 对话页：新对话 / 历史切换 / 删除；`mode=qa|concept|chapter`；问答 SSE + citations + KaTeX
+- [x] 资料页：选课 → 上传（含 PPTX）→ 列表 → 扫描；「强制重建」带确认并传 force
+- [x] grounded: false 拒答态（样式提示即可，无「有据可查」徽章）
+- [x] /sz-cfg/ 各组保存成功（含精排开关）；密钥不回明文；env 不可写时有提示
+- [ ] ≤768px 无横向撑破、分区仍可独立滚动（人工回归）
 ```
 
 ### 风险

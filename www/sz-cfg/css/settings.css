@@ -472,3 +472,82 @@
     max-width: 8rem;
   }
 }
+
+/* Embedding 拉取进度（与资料页上传条同款） */
+.sz-emb-warmup {
+  margin-top: 1rem;
+  max-width: 36rem;
+}
+
+.sz-emb-warmup-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+}
+
+.sz-upload-progress {
+  margin-top: 0.25rem;
+}
+
+.sz-upload-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--sz-text-muted);
+}
+
+.sz-upload-progress-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.sz-upload-progress-pct {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--sz-accent);
+}
+
+.sz-upload-progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--sz-border);
+  overflow: hidden;
+}
+
+.sz-upload-progress-bar {
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: var(--sz-accent);
+  transition: width 0.15s ease-out;
+}
+
+.sz-upload-progress.is-indeterminate .sz-upload-progress-bar {
+  width: 40% !important;
+  animation: sz-progress-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes sz-progress-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(280%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sz-upload-progress-bar {
+    transition: none;
+  }
+
+  .sz-upload-progress.is-indeterminate .sz-upload-progress-bar {
+    animation: none;
+    width: 100% !important;
+    opacity: 0.55;
+  }
+}

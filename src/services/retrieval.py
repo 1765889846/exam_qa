@@ -132,11 +132,14 @@ def retrieve(
     top_k: int | None = None,
     *,
     score_threshold: float | None = None,
+    rerank_enabled: bool | None = None,
 ) -> list[dict]:
     if top_k is None:
         top_k = config.retrieval.top_k
     if score_threshold is None:
         score_threshold = config.retrieval.score_threshold
+    if rerank_enabled is None:
+        rerank_enabled = config.retrieval.rerank_enabled
     if top_k <= 0:
         raise BadRequestException("top_k 必须大于 0")
 
@@ -146,16 +149,39 @@ def retrieve(
     if not course_id or not course_id.strip():
         raise BadRequestException("course_id 不能为空")
 
-    pool = top_k * 2
+    # 精排开：宽池 → RRF → CrossEncoder → top_n
+    if rerank_enabled:
+        pool = max(config.retrieval.rerank_candidates, top_k)
+        fuse_k = pool
+    else:
+        pool = top_k * 2
+        fuse_k = top_k
+
     vec_hits = _vector_search(q, vs, course_id, pool)
     bm25_hits = _bm25_search(q, vs, course_id, pool)
-    fused = rrf_fuse(vec_hits, bm25_hits, top_k=top_k) if (vec_hits or bm25_hits) else []
-    kept = [h for h in fused if h.get("score", 0) >= score_threshold]
+    fused = (
+        rrf_fuse(vec_hits, bm25_hits, top_k=fuse_k) if (vec_hits or bm25_hits) else []
+    )
+
+    if rerank_enabled and fused:
+        from src.services.rerank import rerank as _rerank
+
+        top_n = config.retrieval.rerank_top_n or top_k
+        ranked = _rerank(
+            q,
+            fused,
+            top_n,
+            model_name=config.retrieval.rerank_model,
+        )
+        kept = [h for h in ranked if h.get("score", 0) >= score_threshold]
+    else:
+        kept = [h for h in fused if h.get("score", 0) >= score_threshold]
 
     logger.info(
-        "混合检索: course=%s top_k=%d vec=%d bm25=%d kept=%d",
+        "混合检索: course=%s top_k=%d rerank=%s vec=%d bm25=%d kept=%d",
         course_id,
         top_k,
+        rerank_enabled,
         len(vec_hits),
         len(bm25_hits),
         len(kept),

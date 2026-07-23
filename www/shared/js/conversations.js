@@ -109,7 +109,8 @@ export function appendTurn(courseId, turn) {
     answer: turn.answer || "",
     citations: turn.citations || [],
     grounded: turn.grounded !== false,
-    mode: turn.mode === "concept" ? "concept" : "qa",
+    mode:
+      turn.mode === "concept" || turn.mode === "chapter" ? turn.mode : "qa",
   });
   if (q && (conv.turns.length === 1 || !conv.title || conv.title === "新对话")) {
     conv.title = titleFromQuestion(q);

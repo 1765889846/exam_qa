@@ -1,7 +1,18 @@
 {"question": "傅里叶变换的定义是什么", "course_id": "course-default", "expected_contains": ["傅里叶"], "mode": "qa"}
 {"question": "什么是卷积定理", "course_id": "course-default", "expected_contains": ["卷积", "频域"], "mode": "qa"}
 {"question": "采样定理的内容", "course_id": "course-default", "expected_contains": ["采样", "频率"], "mode": "qa"}
+{"question": "拉普拉斯变换的定义", "course_id": "course-default", "expected_contains": ["拉普拉斯"], "mode": "qa", "note": "txt 样本"}
+{"question": "特征值", "course_id": "course-default", "expected_contains": ["特征"], "mode": "concept", "note": "docx 样本"}
+{"question": "贝叶斯公式", "course_id": "course-default", "expected_contains": ["贝叶斯"], "mode": "concept", "note": "pptx 样本"}
+{"question": "可分离变量", "course_id": "course-default", "expected_contains": ["分离"], "mode": "qa", "note": "pdf 样本"}
+{"question": "克拉默法则", "course_id": "course-default", "expected_contains": ["克拉默"], "mode": "qa", "note": "doc 样本"}
 {"question": "卷积定理", "course_id": "course-default", "expected_contains": ["卷积"], "mode": "concept", "note": "P1-B 知识点聚合"}
+{"question": "傅里叶变换的时移性质", "course_id": "course-default", "expected_contains": ["时移", "相位"], "mode": "concept"}
+{"question": "采样定理", "course_id": "course-default", "expected_contains": ["奈奎斯特"], "mode": "concept"}
+{"question": "第3章 傅里叶变换", "course_id": "course-default", "expected_contains": ["傅里叶"], "mode": "chapter", "note": "P2-A 章节概览"}
+{"question": "第4章 采样定理", "course_id": "course-default", "expected_contains": ["采样"], "mode": "chapter"}
+{"question": "第1章 极限", "course_id": "course-default", "expected_contains": ["极限"], "mode": "chapter"}
+{"question": "第6章 贝叶斯公式", "course_id": "course-default", "expected_contains": ["贝叶斯"], "mode": "chapter", "note": "pptx 章节"}
 {"question": "What is the capital of France", "course_id": "course-default", "expected_contains": ["未找到"], "mode": "qa", "expect_refusal": true}
 {"question": "傅里叶变换的时移性质", "course_id": "course-ideology-2025", "mode": "qa", "expect_refusal": true, "note": "负例：他课 course_id 不得命中默认课资料"}
 {"question": "卷积定理", "course_id": "course-ideology-2025", "mode": "concept", "expect_refusal": true, "note": "负例：concept 模式跨课仍拒答"}
