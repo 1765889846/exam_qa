@@ -9,6 +9,7 @@ build/
 
 # 测试 / 类型检查
 .pytest_cache/
+.pytest-tmp/
 .ruff_cache/
 .mypy_cache/
 .coverage
