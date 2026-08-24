@@ -62,3 +62,13 @@ def sample_txt_file(temp_dir):
         encoding="utf-8",
     )
     return str(path)
+
+
+@pytest.fixture(autouse=True)
+def _clear_retrieval_caches():
+    """每个用例执行前清空检索缓存（BM25 语料、查询向量），保证用例隔离。"""
+    from src.services.retrieval import clear_query_embed_cache, invalidate_bm25_cache
+
+    clear_query_embed_cache()
+    invalidate_bm25_cache()
+    yield

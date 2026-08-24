@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from src.apis.v1 import ask, catalog, config, documents, embedding, health, llm_providers
+from src.apis.v1 import ask, catalog, config, conversations, documents, embedding, health, llm_providers
 
 api_router = APIRouter()
 api_router.include_router(health.router)
@@ -11,4 +11,5 @@ api_router.include_router(llm_providers.router)
 api_router.include_router(catalog.router)
 api_router.include_router(embedding.router)
 api_router.include_router(documents.router)
+api_router.include_router(conversations.router)
 api_router.include_router(ask.router)

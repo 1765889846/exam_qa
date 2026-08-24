@@ -7,6 +7,7 @@ from src.services.retrieval import (
     _BM25,
     _bm25_search,
     clear_query_embed_cache,
+    invalidate_bm25_cache,
     retrieve,
     rrf_fuse,
     tokenize,
@@ -176,3 +177,20 @@ def test_retrieve_rerank_path_uses_wide_pool(monkeypatch):
 
     assert [h["id"] for h in out] == ["d", "a"]
     assert vs.search.call_args.kwargs["top_k"] == 4
+
+def test_bm25_cache_refreshes_after_invalidate(vector_store):
+    dim = 8
+    vector_store.upsert(
+        [_chunk("1", DEFAULT_COURSE_ID, "默认课：傅里叶变换", DEFAULT_COURSE_NAME)],
+        [[0.1] * dim],
+    )
+    assert len(_bm25_search("傅里叶", vector_store, DEFAULT_COURSE_ID, 5)) == 1
+    vector_store.upsert(
+        [_chunk("2", DEFAULT_COURSE_ID, "默认课：卷积定理", DEFAULT_COURSE_NAME)],
+        [[0.2] * dim],
+    )
+    assert _bm25_search("卷积", vector_store, DEFAULT_COURSE_ID, 5) == []
+    invalidate_bm25_cache(DEFAULT_COURSE_ID)
+    assert len(_bm25_search("卷积", vector_store, DEFAULT_COURSE_ID, 5)) == 1
+    invalidate_bm25_cache()
+    assert len(_bm25_search("卷积", vector_store, DEFAULT_COURSE_ID, 5)) == 1

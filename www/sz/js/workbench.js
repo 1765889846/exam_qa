@@ -313,7 +313,8 @@ function setupAsk() {
     let finished = false;
 
     try {
-      await apiAskStream({ question, course_id: courseId, mode }, (ev) => {
+      const convId = getActiveConversationId(courseId);
+      await apiAskStream({ question, course_id: courseId, mode, conversation_id: convId || undefined }, (ev) => {
         if (ev.type === "phase") {
           live.dataset.phase = ev.phase || "";
           if (!answer) {

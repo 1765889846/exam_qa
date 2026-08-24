@@ -9,6 +9,7 @@ from starlette import status
 
 from src.dependencies import (
     get_catalog_store,
+    get_conversation_store,
     get_current_user,
     get_llm_client,
     get_vector_store,
@@ -19,6 +20,7 @@ from src.services.llm import OpenAIClient
 from src.services.query import ask as query_ask
 from src.services.query import ask_stream as query_ask_stream
 from src.services.storage.catalog_store import CatalogStore
+from src.services.storage.conversation_store import ConversationStore
 from src.services.storage.vector_store import ChromaVectorStore
 
 router = APIRouter(prefix="/ask", tags=["ask"])
@@ -35,6 +37,7 @@ async def ask_question(
     vs: ChromaVectorStore = Depends(get_vector_store),
     llm: OpenAIClient = Depends(get_llm_client),
     catalog: CatalogStore = Depends(get_catalog_store),
+    conv_store: ConversationStore = Depends(get_conversation_store),
     _user=Depends(get_current_user),
 ):
     catalog.require_course(body.course_id)
@@ -50,6 +53,8 @@ async def ask_question(
                         vs=vs,
                         llm=llm,
                         course_id=body.course_id,
+                        conversation_store=conv_store,
+                        conversation_id=body.conversation_id,
                     )
                 ):
                     yield line
@@ -78,6 +83,8 @@ async def ask_question(
         vs=vs,
         llm=llm,
         course_id=body.course_id,
+        conversation_store=conv_store,
+        conversation_id=body.conversation_id,
     )
 
     return {

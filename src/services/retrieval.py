@@ -1,10 +1,9 @@
-"""检索：向量 + BM25（按 course_id）→ RRF → 阈值过滤。"""
+﻿"""检索：向量 + BM25（按 course_id）→ RRF → 阈值过滤。"""
 
 from __future__ import annotations
 
 import logging
 import math
-import re
 from collections import Counter
 from functools import lru_cache
 
@@ -16,8 +15,8 @@ from src.services.storage.vector_store import ChromaVectorStore
 logger = logging.getLogger(__name__)
 
 RRF_K = 60
-# ponytail: 无 jieba；CJK 字+二元组+英文词
-_TOKEN_RE = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]+", re.IGNORECASE)
+
+from src.services.tokenizer import tokenize  # noqa: E402
 
 
 @lru_cache(maxsize=256)
@@ -33,18 +32,6 @@ def _embed_cache_key() -> str:
 
 def clear_query_embed_cache() -> None:
     _cached_query_vec.cache_clear()
-
-
-def tokenize(text: str) -> list[str]:
-    tokens: list[str] = []
-    for m in _TOKEN_RE.finditer(text.lower()):
-        s = m.group()
-        if s.isascii():
-            tokens.append(s)
-            continue
-        tokens.extend(s)
-        tokens.extend(s[i : i + 2] for i in range(len(s) - 1))
-    return tokens
 
 
 class _BM25:
@@ -105,14 +92,36 @@ def _vector_search(query: str, vs: ChromaVectorStore, course_id: str, top_k: int
     return vs.search(query_vec, top_k=top_k, course_id=course_id)
 
 
-def _bm25_search(query: str, vs: ChromaVectorStore, course_id: str, top_k: int) -> list[dict]:
+_BM25_CACHE: dict[str, tuple[list[dict], _BM25]] = {}
+
+
+def _bm25_for_course(vs: ChromaVectorStore, course_id: str) -> tuple[list[dict], _BM25]:
+    """按 course_id 缓存语料与倒排索引，避免每次检索全量拉取并重建。"""
+    cached = _BM25_CACHE.get(course_id)
+    if cached is not None:
+        return cached
     corpus = vs.get_by_course_id(course_id)
+    entry = (corpus, _BM25([tokenize(c.get("text", "")) for c in corpus]))
+    _BM25_CACHE[course_id] = entry
+    return entry
+
+
+def invalidate_bm25_cache(course_id: str | None = None) -> None:
+    """使 BM25 语料缓存失效；course_id 为空时清空全部课程缓存。"""
+    if course_id is None:
+        _BM25_CACHE.clear()
+    else:
+        _BM25_CACHE.pop(course_id, None)
+
+
+def _bm25_search(query: str, vs: ChromaVectorStore, course_id: str, top_k: int) -> list[dict]:
+    corpus, bm25 = _bm25_for_course(vs, course_id)
     if not corpus:
         return []
     q_tokens = tokenize(query)
     if not q_tokens:
         return []
-    raw = _BM25([tokenize(c.get("text", "")) for c in corpus]).scores(q_tokens)
+    raw = bm25.scores(q_tokens)
     max_s = max(raw) if raw else 0.0
     ranked = sorted(range(len(raw)), key=lambda i: raw[i], reverse=True)
     hits: list[dict] = []
@@ -187,3 +196,4 @@ def retrieve(
         len(kept),
     )
     return kept
+

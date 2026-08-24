@@ -11,7 +11,7 @@ QA_SYSTEM_PROMPT = """你是一位课程答疑助教。请根据以下参考资�
 
 回答规则：
 1. 优先使用参考资料中的内容，直接引用其中的定义与公式。
-2. 数学公式用 LaTeX：行内用 $...$ 或 \\(...\\)，独立成行用 $$...$$ 或 \\[...\\]；勿把公式拆成裸字母拼写。
+2. 数学公式用 LaTeX：行内用 $...$ 或 \(...\)，独立成行用 $$...$$ 或 \[...\]；勿把公式拆成裸字母拼写。
 3. 资料相关但不完整时，可据已有信息作答，并标明哪些来自资料。
 4. 勿在资料之外自行补充知识点或公式；资料确无则写「资料未包含此内容」。
 5. 引用用【】标注出处，例如【第4章笔记 · 4.2 节】；每个出处单独一个标签。
@@ -68,7 +68,12 @@ def _build_citations(chunks: list[dict]) -> list[dict]:
     ]
 
 
-def _build_messages(context: list[dict], question: str, mode: str = "qa") -> list[dict]:
+def _build_messages(
+    context: list[dict],
+    question: str,
+    mode: str = "qa",
+    history: list[dict] | None = None,
+) -> list[dict]:
     ctx = _format_context(context)
     if mode == "concept":
         system, user = CONCEPT_SYSTEM_PROMPT, f"参考资料：\n\n{ctx}\n\n请聚合知识点「{question}」（定义→公式→例题）。"
@@ -79,21 +84,42 @@ def _build_messages(context: list[dict], question: str, mode: str = "qa") -> lis
         )
     else:
         system, user = QA_SYSTEM_PROMPT, f"参考资料：\n\n{ctx}\n\n学生问题：{question}"
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    messages = [{"role": "system", "content": system}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user})
+    return messages
 
 
-def generate(context: list[dict], question: str, llm: OpenAIClient, mode: str = "qa") -> dict:
+def generate(
+    context: list[dict],
+    question: str,
+    llm: OpenAIClient,
+    mode: str = "qa",
+    history: list[dict] | None = None,
+) -> dict:
     if not context:
         return {"answer": "资料库中未找到相关内容", "citations": [], "grounded": False}
-    answer = llm.chat(_build_messages(context, question, mode=mode), temperature=config.llm.temperature)
+    answer = llm.chat(
+        _build_messages(context, question, mode=mode, history=history),
+        temperature=config.llm.temperature,
+    )
     logger.info("LLM 生成完成: mode=%s len=%d", mode, len(answer))
     return {"answer": answer, "citations": _build_citations(context), "grounded": True}
 
 
-def stream_generate(context: list[dict], question: str, llm: OpenAIClient, mode: str = "qa"):
+def stream_generate(
+    context: list[dict],
+    question: str,
+    llm: OpenAIClient,
+    mode: str = "qa",
+    history: list[dict] | None = None,
+):
     parts: list[str] = []
     for delta in llm.chat_stream(
-        _build_messages(context, question, mode=mode), temperature=config.llm.temperature
+        _build_messages(context, question, mode=mode, history=history),
+        temperature=config.llm.temperature,
     ):
         parts.append(delta)
         yield {"type": "delta", "text": delta}

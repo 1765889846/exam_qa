@@ -122,3 +122,38 @@ export function appendTurn(courseId, turn) {
   );
   return conv;
 }
+
+
+/* ── 后端对话 API 同步 ─────────────────────────────────── */
+
+export async function listBackendConversations(courseId) {
+  try {
+    const res = await fetch("/api/v1/conversations?course_id=" + encodeURIComponent(courseId));
+    const body = await res.json();
+    if (body.code === 200) return body.data || [];
+  } catch { /* 后端不可用时静默降级 */ }
+  return [];
+}
+
+export async function createBackendConversation(courseId, title) {
+  try {
+    const res = await fetch(
+      "/api/v1/conversations?course_id=" + encodeURIComponent(courseId) +
+      "&title=" + encodeURIComponent(title || "新对话"),
+      { method: "POST" }
+    );
+    const body = await res.json();
+    if (body.code === 200) return body.data;
+  } catch { /* 静默降级 */ }
+  return null;
+}
+
+export async function deleteBackendConversation(convId, courseId) {
+  try {
+    await fetch(
+      "/api/v1/conversations/" + encodeURIComponent(convId) +
+      "?course_id=" + encodeURIComponent(courseId),
+      { method: "DELETE" }
+    );
+  } catch { /* 静默降级 */ }
+}

@@ -21,6 +21,7 @@ class AskRequest(BaseModel):
     question: str = Field(..., min_length=1, description="问题内容不能为空")
     course_id: str = Field(..., min_length=1, description="课程 ID，检索隔离必填")
     mode: Literal["qa", "concept", "chapter"] = "qa"
+    conversation_id: str | None = Field(default=None, description="conversation ID for multi-turn context")
     stream: bool = False
 
 

@@ -8,6 +8,7 @@ from src.config import config
 from src.exceptions import AppException, BadRequestException, ServiceUnavailableException, UnsupportedFormatException
 from src.services.embedding import get_embedding_client
 from src.services.parsing import SUPPORTED_EXTENSIONS, parse_file
+from src.services.retrieval import invalidate_bm25_cache
 from src.services.storage.catalog_store import (
     DEFAULT_COLLEGE_ID,
     DEFAULT_COURSE_ID,
@@ -324,6 +325,7 @@ def ingest_file(
     if not course_id or not course_id.strip():
         raise BadRequestException("course_id 不能为空")
 
+    invalidate_bm25_cache(course_id)
     filepath = Path(path)
     filename = display_name or filepath.name
     logger.info("开始入库: %s course_id=%s", filename, course_id)
@@ -400,6 +402,8 @@ def ingest_file(
         logger.exception("入库异常: %s", e)
         _fail_ingest(vs, ds, doc_id)
         raise AppException(f"入库失败: {e}", status_code=500)
+    finally:
+        invalidate_bm25_cache(course_id)
 
 
 def scan_knowledge_dir(

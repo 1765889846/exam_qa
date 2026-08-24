@@ -20,6 +20,7 @@ from src.exceptions import (
     UnsupportedFormatException,
 )
 from src.services.ingestion import SUPPORTED_EXTENSIONS, ingest_file, scan_knowledge_dir
+from src.services.retrieval import invalidate_bm25_cache
 from src.services.storage.catalog_store import CatalogStore
 from src.services.storage.doc_store import SQLiteDocStore
 from src.services.storage.vector_store import ChromaVectorStore
@@ -175,6 +176,7 @@ async def delete_document(
         raise NotFoundException(f"文档不存在: {doc_id}")
 
     vs.delete_by_doc_id(str(doc_id))
+    invalidate_bm25_cache(course_id)
 
     file_path = Path(doc["file_path"])
     if file_path.is_file():

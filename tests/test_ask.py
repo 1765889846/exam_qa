@@ -1,7 +1,12 @@
 """对话主链：流式 / qa|concept|chapter / 拒答 / prompt。"""
 
 import json
+import shutil
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -308,3 +313,67 @@ class TestChapterStore:
             "第4章 卷积",
             "第9章 采样",
         ]
+
+@pytest.fixture
+def conv_store():
+    from src.services.storage.conversation_store import ConversationStore
+
+    tmp = tempfile.mkdtemp()
+    store = ConversationStore(str(Path(tmp) / "test_conv.db"))
+    yield store
+    store.close()
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+class TestSaveTurn:
+    def test_save_turn_persists_with_course_id(self, conv_store):
+        from src.services.query import _save_turn
+
+        ok = _save_turn(conv_store, "conv-1", "course-1", "问题", "回答", [], True, "qa")
+        assert ok is True
+        assert conv_store.get_conversation("conv-1")["course_id"] == "course-1"
+        roles = [m["role"] for m in conv_store.get_history("conv-1")]
+        assert roles == ["user", "assistant"]
+
+    def test_save_turn_returns_false_on_failure(self):
+        from src.services.query import _save_turn
+
+        store = MagicMock()
+        store.append_message.side_effect = RuntimeError("db down")
+        assert (
+            _save_turn(store, "conv-1", "course-1", "问题", "回答", [], True, "qa")
+            is False
+        )
+
+    def test_ask_returns_answer_when_save_fails(self):
+        llm = MagicMock()
+        llm.configured = True
+        hits = [{"text": "定义…", "score": 0.9, "metadata": {"source_file": "a.md"}}]
+        store = MagicMock()
+        store.append_message.side_effect = RuntimeError("db down")
+        with patch("src.services.query.retrieve", return_value=hits):
+            with patch(
+                "src.services.query.generate",
+                return_value={
+                    "answer": "定义…",
+                    "citations": [
+                        {
+                            "source_file": "a.md",
+                            "page": None,
+                            "snippet": "x",
+                            "score": 0.9,
+                        }
+                    ],
+                    "grounded": True,
+                },
+            ):
+                out = ask(
+                    "卷积",
+                    mode="qa",
+                    vs=MagicMock(),
+                    llm=llm,
+                    course_id=DEFAULT_COURSE_ID,
+                    conversation_store=store,
+                    conversation_id="conv-1",
+                )
+        assert out.answer == "定义…"

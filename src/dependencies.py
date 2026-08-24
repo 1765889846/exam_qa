@@ -7,6 +7,7 @@ from src.config import config
 from src.services.embedding import EmbeddingClient, get_embedding_client as _get_embedding_client
 from src.services.llm import OpenAIClient
 from src.services.storage.catalog_store import CatalogStore
+from src.services.storage.conversation_store import ConversationStore
 from src.services.storage.doc_store import SQLiteDocStore
 from src.services.storage.vector_store import ChromaVectorStore
 
@@ -45,10 +46,16 @@ def get_embedding_client() -> EmbeddingClient:
     return _get_embedding_client()
 
 
+@lru_cache()
+def get_conversation_store() -> ConversationStore:
+    return ConversationStore(db_path=config.storage.sqlite_path)
+
+
 def reload_services() -> None:
     """配置变更后清空单例缓存。"""
     from src.services.embedding import reset_embedding_client
     from src.services.rerank import clear_reranker
+    from src.services.retrieval import invalidate_bm25_cache
 
     get_vector_store.cache_clear()
     get_doc_store.cache_clear()
@@ -56,6 +63,7 @@ def reload_services() -> None:
     get_llm_client.cache_clear()
     reset_embedding_client()
     clear_reranker()
+    invalidate_bm25_cache()
 
 
 async def get_current_user() -> None:

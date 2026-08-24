@@ -51,3 +51,19 @@ class TestParseOffice:
         parsed = parse_file(str(path))
         assert "采样定理" in parsed.full_text
         assert parsed.pages[0].page == 1
+
+    def test_parse_pptx_fallback_without_converter(self, temp_dir, monkeypatch):
+        """无 LibreOffice/PowerPoint 时必须回退 python-pptx 提取。"""
+        from pptx import Presentation
+        from src.services import parsing
+
+        path = temp_dir / "fallback.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        slide.shapes.title.text = "回退测试"
+        prs.save(str(path))
+
+        monkeypatch.setattr(parsing, "_convert_pptx_to_pdf", lambda p: None)
+        parsed = parse_file(str(path))
+        assert "回退测试" in parsed.full_text
+        assert parsed.pages[0].page == 1
