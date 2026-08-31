@@ -308,6 +308,7 @@ POST /api/v1/ask
 | P2-A 离线评估 · BGE 精排 · `mode=chapter` | 已实现（精排默认关） |
 | PDF 结构化解析 · 语义切片 · 可选视觉摘要 | 已实现（MinerU 不可用时自动回退） |
 | PDF 内容指纹 · 影子入库 · 自动版本切换 | 已实现 |
+| 证据治理 · 三层意图路由 | 已实现 |
 | P2-B Agent（LangGraph 多步循环） | 已实现 |
 | P2-C LLM 自主决策 · 工具调用（function calling） | 工具底座已完成；决策环未实现 |
 | P3 平台化 | 未做 |
