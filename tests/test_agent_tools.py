@@ -148,3 +148,14 @@ class TestToolRegistry:
         with patch("src.services.agent.tools.retrieve_tool", return_value=[_hit("片段")]):
             out = tools.execute_tool("search_pdf", {"query": "问题"}, vs=vs, course_id="course-default")
         assert out["query"] == "问题"
+
+    def test_execute_forwards_evidence_filters(self):
+        vs = _vs()
+        with patch("src.services.agent.tools.retrieve_tool", return_value=[_hit("片段")]) as retrieve:
+            tools.execute_tool(
+                "search_pdf", {"query": "考试要求"}, vs=vs, course_id="course-default",
+                scenario="考试", as_of="2026-09-01",
+            )
+        retrieve.assert_called_once_with(
+            "考试要求", vs, "course-default", 5, scenario="考试", as_of="2026-09-01"
+        )

@@ -9,6 +9,7 @@ from src.services.llm import OpenAIClient
 from src.services.storage.catalog_store import CatalogStore
 from src.services.storage.conversation_store import ConversationStore
 from src.services.storage.doc_store import SQLiteDocStore
+from src.services.storage.question_bank_store import QuestionBankStore
 from src.services.storage.vector_store import ChromaVectorStore
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,11 @@ def get_conversation_store() -> ConversationStore:
     return ConversationStore(db_path=config.storage.sqlite_path)
 
 
+@lru_cache()
+def get_question_bank_store() -> QuestionBankStore:
+    return QuestionBankStore(db_path=config.storage.sqlite_path)
+
+
 def reload_services() -> None:
     """配置变更后清空单例缓存。"""
     from src.services.embedding import reset_embedding_client
@@ -61,6 +67,7 @@ def reload_services() -> None:
     get_doc_store.cache_clear()
     get_catalog_store.cache_clear()
     get_llm_client.cache_clear()
+    get_question_bank_store.cache_clear()
     reset_embedding_client()
     clear_reranker()
     invalidate_bm25_cache()

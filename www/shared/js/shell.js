@@ -60,6 +60,7 @@ export async function initShell({ active, catalog = true } = {}) {
       <nav class="sz-nav">
         <a href="/sz/" data-nav="sz" class="${active === "sz" ? "is-active" : ""}">对话</a>
         <a href="/sz-docs/" data-nav="docs" class="${active === "docs" ? "is-active" : ""}">资料</a>
+        <a href="/sz-bank/" data-nav="bank" class="${active === "bank" ? "is-active" : ""}">我的题库</a>
         <a href="/sz-cfg/" data-nav="cfg" class="${active === "cfg" ? "is-active" : ""}">设置</a>
       </nav>
       <div class="sz-topbar-right">

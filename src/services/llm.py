@@ -15,6 +15,9 @@ class LLMClient(Protocol):
     def chat(self, messages: list[dict], **kwargs) -> str:
         ...
 
+    def chat_with_tools(self, messages: list[dict], tools: list[dict], **kwargs) -> dict:
+        ...
+
     def health_check(self) -> bool:
         ...
 
@@ -86,6 +89,34 @@ class OpenAIClient:
                 delta = chunk.choices[0].delta.content
                 if delta:
                     yield delta
+        except Exception as e:
+            self._raise_mapped(e)
+
+    def chat_with_tools(self, messages: list[dict], tools: list[dict], **kwargs) -> dict:
+        """调用 OpenAI 兼容 function calling，并归一化为服务层可消费的字典。"""
+        if self._client is None:
+            raise LLMAPIException("AI 服务未配置：请设置 LLM_API_KEY")
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                tools=tools,
+                tool_choice=kwargs.get("tool_choice", "auto"),
+                temperature=kwargs.get("temperature", 0),
+                max_tokens=kwargs.get("max_tokens", self._max_tokens),
+            )
+            message = resp.choices[0].message
+            calls = []
+            for call in message.tool_calls or []:
+                function = call.function
+                calls.append(
+                    {
+                        "id": call.id,
+                        "name": function.name,
+                        "arguments": function.arguments or "{}",
+                    }
+                )
+            return {"content": message.content or "", "tool_calls": calls}
         except Exception as e:
             self._raise_mapped(e)
 

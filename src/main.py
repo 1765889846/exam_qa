@@ -238,6 +238,12 @@ if (_sz_docs_dir / "index.html").is_file():
         "/sz-docs", StaticFiles(directory=str(_sz_docs_dir), html=True), name="sz-docs"
     )
 
+_sz_bank_dir = _WWW_DIR / "sz-bank"
+if (_sz_bank_dir / "index.html").is_file():
+    app.mount(
+        "/sz-bank", StaticFiles(directory=str(_sz_bank_dir), html=True), name="sz-bank"
+    )
+
 _sz_cfg_dir = _WWW_DIR / "sz-cfg"
 if (_sz_cfg_dir / "index.html").is_file():
     app.mount(

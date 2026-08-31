@@ -215,7 +215,11 @@ exam-rag/
 | `PATCH` | `/api/v1/documents/{doc_id}/evidence` | 人工修订版本、生效期、权威及固定场景（`?course_id=`） |
 | `DELETE` | `/api/v1/documents/{doc_id}` | 删除（`?course_id=`） |
 | `POST` | `/api/v1/ask` | 问答（`course_id`；`mode=auto\|qa\|concept\|chapter`，默认 `auto`；可选 `scenario`、`as_of`） |
-| `POST` | `/api/v1/agent/run` | Agent 多步问答（`course_id`；`mode=qa\|concept`；`max_steps` 上限 10） |
+| `POST` | `/api/v1/agent/run` | Agent 多步问答（`course_id`；可选 `scenario` / `as_of`；`agentic=true` 启用工具调用；`max_steps` 上限 10） |
+| `POST` | `/api/v1/question-bank/generate` | 基于当前课程有效资料生成并保存题目草稿 |
+| `GET/POST/PATCH/DELETE` | `/api/v1/question-bank/questions` | 我的题库题目管理（全程 `course_id` 隔离） |
+| `GET/POST/DELETE` | `/api/v1/question-bank/papers` | 试卷保存、读取与删除（全程 `course_id` 隔离） |
+| `POST` | `/api/v1/question-bank/papers/assemble` | 按题型、难度、章节、题数和分值蓝图受控自动组卷 |
 
 默认课：`course-default`。同一物理文件不会跨课改归属。
 
@@ -223,15 +227,19 @@ exam-rag/
 
 **BGE 精排**：设置页打开「启用 BGE 精排」后，对混合召回结果做 CrossEncoder 重排；默认关闭（避免首启强制下载模型）。
 
+**BGE 模型下载失败 / `rerank=false`**：精排开启后首次使用需要下载 `RERANK_MODEL`（默认 `BAAI/bge-reranker-v2-m3`）。若日志提示无法连接 `HF_ENDPOINT` 且本地缓存不存在，系统会跳过精排以保证问答可用，检索日志显示 `rerank=false`。可临时设置 `RERANK_ENABLED=false` 后重启；或确认镜像/代理可访问，再设置 `HF_ENDPOINT=https://huggingface.co`（或可用镜像）重新启动并等待下载完成。生产或离线环境建议预先下载完整模型，并把 `RERANK_MODEL` 指向本地目录。
+
 **PDF 自动更新**：上传 PDF 或扫描资料目录时，系统先计算 SHA-256 去重；再以规范化文件名和已入库文本相似度匹配同一课程的旧版。新版以不可检索状态完成解析/向量化后才切换；失败时旧版继续可用。文件名相似但内容差异过大的 PDF 会作为新资料入库。
 
 **证据元数据与择证**：入库会从正文抽取版本号、生效/失效日期及权威层级候选，记录抽取置信度。自然语言「适用范围」不会直接用于过滤，须通过 `PATCH /documents/{doc_id}/evidence?course_id=...` 设为稳定的场景键（如 `考试`、`实验`）。问答传入 `scenario` 和 `as_of`（`YYYY-MM-DD`）后，仅保留该场景或 `all`、且当日有效的证据；其后优先更高权威，再优先较新的生效版本。每条 citation 返回版本、时效、权威、场景和选择原因。
 
 **意图识别**：`mode` 未指定时为 `auto`。规则层毫秒级识别章节、概念、版本/时效和受控场景；指代性追问（如“按刚才那个范围”）从会话中继承上一轮已保存的结构化意图；仅在无可继承状态的模糊指代下调用 LLM，并强制其只返回经过枚举和日期校验的 JSON 计划。实际检索、范围过滤和证据选择始终由后端确定性执行。响应 `data.intent` 可用于观测路由层、置信度与最终检索范围。
 
-**Agent 多步问答（`/agent/run`）**：LangGraph 编排 `retrieve → grade → rewrite/generate → refuse` 循环，检索不达标时自动改写查询重试（`max_steps` 默认 3、上限 10）。`langgraph` 已纳入项目依赖，`uv sync` 即会安装。
+**Agent 多步问答（`/agent/run`）**：默认走 P2-B 固定图 `retrieve → grade → rewrite/generate → refuse`，检索不达标时自动改写查询重试（`max_steps` 默认 3、上限 10）。可传 `scenario`、`as_of` 复用证据范围/时效过滤。`langgraph` 已纳入项目依赖，`uv sync` 即会安装。
 
-**P2-C（工具底座已完成，决策环未接通）**：已有 `search_pdf` / `read_page` / `extract_table` / `analyze_chart` / `quote_source` 五个只读工具、OpenAI function schema、白名单分发与单测。当前 `/agent/run` 仍走 P2-B 固定状态图；LLM 自主选择工具的决策环尚未实现。详见 `docs/04-后续演进规范.md` §4.4.8。
+**P2-C（受控工具调用）**：传 `agentic: true` 后，模型通过 OpenAI function calling 在 `agent → tool → agent` 中选择 `search_pdf` / `read_page` / `extract_table` / `analyze_chart` / `quote_source` 五个只读工具。系统强制课程范围、参数白名单与工具轮数；没有工具证据时一律拒答。响应 `data.tool_calls` 仅返回脱敏的工具名、参数、成功状态和引用数量。模型调用异常或未配置时自动回退 P2-B 固定图（`agentic: false`）。详见 `docs/04-后续演进规范.md` §4.4.8。
+
+**我的题库**：访问 `/sz-bank/`，选择课程后按知识点、章节、题型、难度和题数出题。系统先按 `course_id`、`scenario`、`as_of` 检索有效资料；无证据时返回 `grounded: false` 且不会保存。成功生成的题目默认是 `draft` 草稿，并保存答案、解析、题型、难度、章节、证据引用与资料版本；勾选题目即可保存试卷。还可按蓝图自动组卷：优先复用带有效证据的同课程题目，缺题才补生成草稿，并在题数、题型、难度、章节、总分、去重和课程隔离校验全部通过后保存。题库和试卷均严格课程隔离。
 
 <details>
 <summary>问答示例</summary>
@@ -310,7 +318,8 @@ POST /api/v1/ask
 | PDF 内容指纹 · 影子入库 · 自动版本切换 | 已实现 |
 | 证据治理 · 三层意图路由 | 已实现 |
 | P2-B Agent（LangGraph 多步循环） | 已实现 |
-| P2-C LLM 自主决策 · 工具调用（function calling） | 工具底座已完成；决策环未实现 |
+| P2-C LLM 自主决策 · 工具调用（function calling） | 已实现（显式开关，P2-B 默认/降级） |
+| 我的题库 · 受控出题 · 组卷 | 已实现（题目草稿、证据引用、SQLite 保存、WebUI） |
 | P3 平台化 | 未做 |
 
 ## Development

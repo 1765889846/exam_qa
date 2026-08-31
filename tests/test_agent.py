@@ -29,6 +29,60 @@ def _hit(score: float) -> dict:
 
 
 class TestAgentLoop:
+    def test_agentic_calls_tool_then_returns_grounded_answer(self):
+        vs = MagicMock()
+        llm = _fake_llm(configured=True)
+        llm.chat_with_tools.side_effect = [
+            {
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_1", "name": "search_pdf", "arguments": '{"query":"采样定理"}'},
+                ],
+            },
+            {"content": "根据资料，采样频率需要满足奈奎斯特条件。", "tool_calls": []},
+        ]
+        with patch("src.services.agent.tools.retrieve_tool", return_value=[_hit(0.8)]) as ret:
+            result = run_agent("采样定理要求", "course-default", vs, llm, agentic=True)
+        assert result["agentic"] is True
+        assert result["grounded"] is True
+        assert result["answer"].startswith("根据资料")
+        assert result["tool_calls"] == [
+            {"id": "call_1", "name": "search_pdf", "arguments": {"query": "采样定理"}, "ok": True, "citation_count": 1, "error": ""}
+        ]
+        assert len(result["citations"]) == 1
+        assert llm.chat_with_tools.call_count == 2
+        ret.assert_called_once_with("采样定理", vs, "course-default", 5)
+
+    def test_agentic_refuses_direct_answer_without_tool_evidence(self):
+        vs = MagicMock()
+        llm = _fake_llm(configured=True)
+        llm.chat_with_tools.return_value = {"content": "我认为答案是……", "tool_calls": []}
+        result = run_agent("问题", "course-default", vs, llm, agentic=True)
+        assert result["agentic"] is True
+        assert result["grounded"] is False
+        assert result["answer"] == "资料库中未找到相关内容"
+
+    def test_agentic_stops_at_tool_round_limit(self):
+        vs = MagicMock()
+        llm = _fake_llm(configured=True)
+        llm.chat_with_tools.return_value = {
+            "content": "", "tool_calls": [{"id": "call_1", "name": "search_pdf", "arguments": '{"query":"问题"}'}],
+        }
+        with patch("src.services.agent.tools.retrieve_tool", return_value=[_hit(0.8)]):
+            result = run_agent("问题", "course-default", vs, llm, agentic=True, max_steps=1)
+        assert result["grounded"] is False
+        assert len(result["tool_calls"]) == 1
+        assert llm.chat_with_tools.call_count == 2
+
+    def test_agentic_unconfigured_downgrades_to_fixed_agent(self):
+        vs = MagicMock()
+        llm = _fake_llm(configured=False)
+        with patch("src.services.agent.tools.retrieve_tool", return_value=[_hit(0.8)]):
+            with patch("src.services.generation.generate", return_value={"answer": "答案", "citations": [], "grounded": True}):
+                result = run_agent("问题", "course-default", vs, llm, agentic=True)
+        assert result["agentic"] is False
+        llm.chat_with_tools.assert_not_called()
+
     def test_generate_when_sufficient(self):
         vs = MagicMock()
         llm = _fake_llm(configured=True)
@@ -142,3 +196,28 @@ class TestAgentApi:
         assert body["data"]["grounded"] is True
         assert body["data"]["answer"] == "答案"
         catalog.require_course.assert_called_once_with("course-default")
+
+    def test_endpoint_forwards_agentic_filters(self):
+        vs = MagicMock()
+        llm = _fake_llm(configured=True)
+        catalog = MagicMock()
+        app.dependency_overrides[get_vector_store] = lambda: vs
+        app.dependency_overrides[get_llm_client] = lambda: llm
+        app.dependency_overrides[get_catalog_store] = lambda: catalog
+        try:
+            with patch("src.apis.v1.agent.run_agent", return_value={
+                "answer": "答案", "citations": [], "grounded": True, "steps": [],
+                "tool_calls": [], "agentic": True, "agent_used": True,
+            }) as runner:
+                r = client.post("/api/v1/agent/run", json={
+                    "question": "考试要求", "course_id": "course-default", "agentic": True,
+                    "scenario": "考试", "as_of": "2026-09-01",
+                })
+        finally:
+            app.dependency_overrides.pop(get_vector_store, None)
+            app.dependency_overrides.pop(get_llm_client, None)
+            app.dependency_overrides.pop(get_catalog_store, None)
+        assert r.status_code == 200
+        assert runner.call_args.kwargs["agentic"] is True
+        assert runner.call_args.kwargs["scenario"] == "考试"
+        assert runner.call_args.kwargs["as_of"] == "2026-09-01"

@@ -24,23 +24,28 @@ def retrieve_tool(
     vs: ChromaVectorStore,
     course_id: str,
     top_k: int,
+    *,
+    scenario: str | None = None,
+    as_of: str | None = None,
 ) -> list[dict]:
     """调用检索主链路（向量 + BM25 → RRF），返回候选片段（不在此处做阈值过滤）。"""
     from src.services.retrieval import retrieve
 
-    return retrieve(
-        query=query,
-        vs=vs,
-        course_id=course_id,
-        top_k=top_k,
-        score_threshold=0.0,
-    )
+    kwargs: dict[str, object] = {
+        "query": query, "vs": vs, "course_id": course_id,
+        "top_k": top_k, "score_threshold": 0.0,
+    }
+    if scenario:
+        kwargs["scenario"] = scenario
+    if as_of:
+        kwargs["as_of"] = as_of
+    return retrieve(**kwargs)
 
 
 def _citation(hit: dict) -> dict:
     """把检索命中转成结构化引用来源（文件/页码/章节/切片路径）。"""
     meta = hit.get("metadata") or {}
-    return {
+    citation = {
         "source_file": meta.get("source_file") or "",
         "page": meta.get("page"),
         "chapter": meta.get("chapter") or "",
@@ -49,6 +54,10 @@ def _citation(hit: dict) -> dict:
         "snippet": (hit.get("text") or "")[:200],
         "score": round(float(hit.get("score") or 0.0), 4),
     }
+    # 让 Agent 能将检索命中继续交给 read_page 精读；对外 Citation 模型会忽略此内部辅助字段。
+    if meta.get("doc_id"):
+        citation["doc_id"] = str(meta["doc_id"])
+    return citation
 
 
 def _embed_query(query: str) -> list[float]:
@@ -62,9 +71,17 @@ def search_pdf(
     vs: ChromaVectorStore,
     course_id: str,
     top_k: int = 5,
+    *,
+    scenario: str | None = None,
+    as_of: str | None = None,
 ) -> dict:
     """search_pdf：检索课程资料中与问题相关的片段（向量 + BM25 → RRF）。"""
-    hits = retrieve_tool(query, vs, course_id, top_k)
+    kwargs: dict[str, object] = {}
+    if scenario:
+        kwargs["scenario"] = scenario
+    if as_of:
+        kwargs["as_of"] = as_of
+    hits = retrieve_tool(query, vs, course_id, top_k, **kwargs)
     return {
         "query": query,
         "results": [
@@ -82,14 +99,21 @@ def read_page(
     course_id: str,
     *,
     source_file: str | None = None,
+    scenario: str | None = None,
+    as_of: str | None = None,
 ) -> dict:
     """read_page：读取指定文档指定页的完整文本（含表格/图片摘要切片）。"""
-    hits = vs.get_chunks(
-        course_id=course_id,
-        doc_id=doc_id,
-        source_file=source_file,
-        page=int(page),
-    )
+    kwargs: dict[str, object] = {
+        "course_id": course_id,
+        "doc_id": doc_id,
+        "source_file": source_file,
+        "page": int(page),
+    }
+    if scenario:
+        kwargs["scenario"] = scenario
+    if as_of:
+        kwargs["as_of"] = as_of
+    hits = vs.get_chunks(**kwargs)
     if not hits:
         return {
             "doc_id": doc_id,
@@ -117,26 +141,35 @@ def extract_table(
     source_file: str | None = None,
     page: int | None = None,
     top_k: int = 10,
+    scenario: str | None = None,
+    as_of: str | None = None,
 ) -> dict:
     """extract_table：抽取资料中的表格。
 
     给定 query 时按语义检索表格切片；否则按 doc_id/source_file/page 过滤取表。
     """
     if query:
-        hits = vs.search(
-            _embed_query(query),
-            top_k=top_k,
-            course_id=course_id,
-            block_type="table",
-        )
+        kwargs: dict[str, object] = {
+            "top_k": top_k, "course_id": course_id, "block_type": "table",
+        }
+        if scenario:
+            kwargs["scenario"] = scenario
+        if as_of:
+            kwargs["as_of"] = as_of
+        hits = vs.search(_embed_query(query), **kwargs)
     else:
-        hits = vs.get_chunks(
-            course_id=course_id,
-            doc_id=doc_id,
-            source_file=source_file,
-            page=page,
-            block_type="table",
-        )
+        kwargs = {
+            "course_id": course_id,
+            "doc_id": doc_id,
+            "source_file": source_file,
+            "page": page,
+            "block_type": "table",
+        }
+        if scenario:
+            kwargs["scenario"] = scenario
+        if as_of:
+            kwargs["as_of"] = as_of
+        hits = vs.get_chunks(**kwargs)
     tables = [
         {
             "text": h.get("text", ""),
@@ -165,6 +198,8 @@ def analyze_chart(
     doc_id: str | None = None,
     page: int | None = None,
     top_k: int = 10,
+    scenario: str | None = None,
+    as_of: str | None = None,
 ) -> dict:
     """analyze_chart：分析资料中的图片/图表。
 
@@ -175,21 +210,24 @@ def analyze_chart(
     if query:
         vec = _embed_query(query)
         for btype in ("image_summary", "image"):
-            hits.extend(
-                vs.search(vec, top_k=top_k, course_id=course_id, block_type=btype)
-            )
+            kwargs: dict[str, object] = {
+                "top_k": top_k, "course_id": course_id, "block_type": btype,
+            }
+            if scenario:
+                kwargs["scenario"] = scenario
+            if as_of:
+                kwargs["as_of"] = as_of
+            hits.extend(vs.search(vec, **kwargs))
         hits.sort(key=lambda h: float(h.get("score") or 0.0), reverse=True)
         hits = hits[:top_k]
     else:
         for btype in ("image_summary", "image"):
-            hits.extend(
-                vs.get_chunks(
-                    course_id=course_id,
-                    doc_id=doc_id,
-                    page=page,
-                    block_type=btype,
-                )
-            )
+            kwargs = {"course_id": course_id, "doc_id": doc_id, "page": page, "block_type": btype}
+            if scenario:
+                kwargs["scenario"] = scenario
+            if as_of:
+                kwargs["as_of"] = as_of
+            hits.extend(vs.get_chunks(**kwargs))
 
     # 两种 block_type 检索可能重叠，按 chunk id 去重
     seen: set[str] = set()
@@ -235,9 +273,17 @@ def quote_source(
     vs: ChromaVectorStore,
     course_id: str,
     top_k: int = 5,
+    *,
+    scenario: str | None = None,
+    as_of: str | None = None,
 ) -> dict:
     """quote_source：返回检索结果的引用来源（文件/页码/章节/切片路径）。"""
-    hits = retrieve_tool(query, vs, course_id, top_k)
+    kwargs: dict[str, object] = {}
+    if scenario:
+        kwargs["scenario"] = scenario
+    if as_of:
+        kwargs["as_of"] = as_of
+    hits = retrieve_tool(query, vs, course_id, top_k, **kwargs)
     return {
         "query": query,
         "count": len(hits),
@@ -337,6 +383,8 @@ def execute_tool(
     course_id: str,
     llm=None,
     top_k: int = 5,
+    scenario: str | None = None,
+    as_of: str | None = None,
 ) -> dict:
     """工具白名单分发（P2-C 决策环执行节点）。未知工具拒绝，不静默忽略。"""
     if name not in SUPPORTED_TOOLS:
@@ -344,7 +392,7 @@ def execute_tool(
             f"未知工具: {name}，可用工具: {', '.join(sorted(SUPPORTED_TOOLS))}"
         )
     if name == "search_pdf":
-        return search_pdf(args.get("query", ""), vs, course_id, int(args.get("top_k") or top_k))
+        return search_pdf(args.get("query", ""), vs, course_id, int(args.get("top_k") or top_k), scenario=scenario, as_of=as_of)
     if name == "read_page":
         return read_page(
             args.get("doc_id") or "",
@@ -352,6 +400,8 @@ def execute_tool(
             vs,
             course_id,
             source_file=args.get("source_file"),
+            scenario=scenario,
+            as_of=as_of,
         )
     if name == "extract_table":
         return extract_table(
@@ -362,6 +412,8 @@ def execute_tool(
             source_file=args.get("source_file"),
             page=int(args["page"]) if args.get("page") is not None else None,
             top_k=int(args.get("top_k") or top_k),
+            scenario=scenario,
+            as_of=as_of,
         )
     if name == "analyze_chart":
         return analyze_chart(
@@ -372,7 +424,9 @@ def execute_tool(
             doc_id=args.get("doc_id"),
             page=int(args["page"]) if args.get("page") is not None else None,
             top_k=int(args.get("top_k") or top_k),
+            scenario=scenario,
+            as_of=as_of,
         )
     if name == "quote_source":
-        return quote_source(args.get("query", ""), vs, course_id, int(args.get("top_k") or top_k))
+        return quote_source(args.get("query", ""), vs, course_id, int(args.get("top_k") or top_k), scenario=scenario, as_of=as_of)
     raise BadRequestException(f"工具未实现: {name}")  # pragma: no cover

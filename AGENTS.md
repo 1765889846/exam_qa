@@ -43,7 +43,8 @@ uv run pytest -q -m integration   # 集成测试（需 Embedding + LLM）
 - 证据元数据：入库自动提取版本、生效期和权威候选；固定适用范围必须使用人工维护的 `applicability_scope` 场景键。查询传 `scenario` / `as_of` 时先过滤范围与时效，再按权威层级、生效时间择证，并在 citation 解释选择依据。
 - 意图路由采用三层漏斗：规则层优先；指代追问继承 `ConversationStore` 的已确认意图；仅无状态的复杂模糊请求允许受约束 LLM 返回 JSON 计划。LLM 不得直接绕过检索、权限、场景和时效校验。
 - Agent（LangGraph 多步循环）已落地为 P2-B：`src/services/agent/` + `POST /agent/run`，仅薄封装 `retrieve` / `generate`，不重写 P0 主链路（ingestion → retrieval → generation）。
-- P2-C 已落地只读工具、function schema、白名单分发与单测，但 LLM 自主决策环尚未接入 `/agent/run`；仍不引入 MCP / Skills，工具仅薄封装 service，不重写 P0 主链路。
+- P2-C 已接入 `/agent/run`：`agentic=true` 启用 `agent ↔ tool` 的 function-calling 循环，默认仍为 P2-B，LLM 异常或未配置会自动降级。只读工具以白名单分发、系统强制 `course_id` / 场景 / 时效范围，并返回脱敏的 `tool_calls` 观测；仍不引入 MCP / Skills。
+- “我的题库”位于 `QuestionBankStore`、`services/question_bank.py`、`/api/v1/question-bank/*` 与 `/sz-bank/`：自动出题必须先检索当前课程的有效证据，无证据不保存；题目和试卷均以 `course_id` 隔离。自动组卷只复用带有效证据的题目，缺题时才受控补题，并校验蓝图、去重、总分与课程范围。
 
 ## 测试约定
 

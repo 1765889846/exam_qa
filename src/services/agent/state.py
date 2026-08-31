@@ -22,3 +22,9 @@ class AgentState(TypedDict, total=False):
     answer: str
     grounded: bool
     decision: str
+    scenario: str | None
+    as_of: str | None
+    messages: Annotated[list[dict], operator.add]
+    pending_tool_calls: list[dict]
+    tool_calls: Annotated[list[dict], operator.add]
+    tool_rounds: int

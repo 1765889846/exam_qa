@@ -1,4 +1,4 @@
-"""POST /agent/run — LangGraph Agent 循环（P2-B）。"""
+"""POST /agent/run — LangGraph Agent（P2-B 固定图 / P2-C 工具调用）。"""
 
 from fastapi import APIRouter, Depends
 from starlette import status
@@ -36,6 +36,9 @@ async def agent_run(
         max_steps=body.max_steps,
         top_k=body.top_k,
         score_threshold=body.score_threshold,
+        scenario=body.scenario,
+        as_of=body.as_of,
+        agentic=body.agentic,
     )
     return {
         "code": status.HTTP_200_OK,
@@ -44,6 +47,8 @@ async def agent_run(
             citations=result["citations"],
             grounded=result["grounded"],
             steps=result["steps"],
+            tool_calls=result["tool_calls"],
+            agentic=result["agentic"],
             agent_used=result["agent_used"],
         ).model_dump(),
     }

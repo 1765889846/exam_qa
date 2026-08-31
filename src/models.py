@@ -52,6 +52,9 @@ class AgentRunRequest(BaseModel):
     max_steps: int = Field(default=3, ge=1, le=10, description="最大检索/改写轮数")
     top_k: int | None = Field(default=None, ge=1, description="单轮检索候选数，缺省用全局配置")
     score_threshold: float | None = Field(default=None, ge=0, le=1, description="判定检索足够的阈值，缺省用全局配置")
+    scenario: str | None = Field(default=None, max_length=80, description="固定适用场景键")
+    as_of: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="证据生效日 YYYY-MM-DD")
+    agentic: bool = Field(default=False, description="启用 P2-C 受控工具调用循环；失败自动降级 P2-B")
 
 
 class AgentRunData(BaseModel):
@@ -59,7 +62,123 @@ class AgentRunData(BaseModel):
     citations: list[Citation] = []
     grounded: bool = True
     steps: list[str] = []
+    tool_calls: list[dict] = []
+    agentic: bool = False
     agent_used: bool = True
+
+
+QuestionType = Literal["choice", "fill_blank", "short_answer"]
+QuestionDifficulty = Literal["easy", "medium", "hard"]
+QuestionStatus = Literal["draft", "reviewed"]
+
+
+class QuestionCreateRequest(BaseModel):
+    course_id: str = Field(..., min_length=1, description="课程 ID，题库隔离必填")
+    stem: str = Field(..., min_length=1, max_length=4000)
+    question_type: QuestionType = "short_answer"
+    options: list[str] = Field(default_factory=list, max_length=8)
+    answer: str = Field(..., min_length=1, max_length=4000)
+    analysis: str = Field(default="", max_length=6000)
+    difficulty: QuestionDifficulty = "medium"
+    chapter: str = Field(default="", max_length=160)
+    status: QuestionStatus = "draft"
+
+
+class QuestionPatch(BaseModel):
+    stem: str | None = Field(default=None, min_length=1, max_length=4000)
+    question_type: QuestionType | None = None
+    options: list[str] | None = Field(default=None, max_length=8)
+    answer: str | None = Field(default=None, min_length=1, max_length=4000)
+    analysis: str | None = Field(default=None, max_length=6000)
+    difficulty: QuestionDifficulty | None = None
+    chapter: str | None = Field(default=None, max_length=160)
+    status: QuestionStatus | None = None
+
+
+class QuestionGenerateRequest(BaseModel):
+    course_id: str = Field(..., min_length=1, description="课程 ID，题库隔离必填")
+    topic: str = Field(..., min_length=1, max_length=300, description="出题主题或知识点")
+    question_type: QuestionType = "short_answer"
+    difficulty: QuestionDifficulty = "medium"
+    count: int = Field(default=3, ge=1, le=10)
+    chapter: str = Field(default="", max_length=160)
+    scenario: str | None = Field(default=None, max_length=80)
+    as_of: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class QuestionData(BaseModel):
+    id: str
+    course_id: str
+    stem: str
+    question_type: QuestionType
+    options: list[str] = []
+    answer: str
+    analysis: str = ""
+    difficulty: QuestionDifficulty
+    chapter: str = ""
+    citations: list[Citation] = []
+    scenario: str = ""
+    as_of: str = ""
+    status: QuestionStatus = "draft"
+    origin: Literal["manual", "agent"] = "manual"
+    created_at: str
+    updated_at: str
+
+
+class QuestionGenerateData(BaseModel):
+    questions: list[QuestionData] = []
+    citations: list[Citation] = []
+    grounded: bool = True
+
+
+class PaperItemRequest(BaseModel):
+    question_id: str = Field(..., min_length=1)
+    score: float = Field(default=1, gt=0, le=100)
+
+
+class PaperCreateRequest(BaseModel):
+    course_id: str = Field(..., min_length=1, description="课程 ID，题库隔离必填")
+    title: str = Field(..., min_length=1, max_length=200)
+    description: str = Field(default="", max_length=1000)
+    items: list[PaperItemRequest] = Field(..., min_length=1, max_length=100)
+
+
+class PaperBlueprintRule(BaseModel):
+    question_type: QuestionType
+    difficulty: QuestionDifficulty = "medium"
+    count: int = Field(..., ge=1, le=50)
+    score: float = Field(default=1, gt=0, le=100)
+    chapter: str = Field(default="", max_length=160)
+
+
+class PaperAssembleRequest(BaseModel):
+    course_id: str = Field(..., min_length=1, description="课程 ID，题库隔离必填")
+    title: str = Field(..., min_length=1, max_length=200)
+    topic: str = Field(..., min_length=1, max_length=300, description="缺题时基于此主题受控补题")
+    description: str = Field(default="", max_length=1000)
+    rules: list[PaperBlueprintRule] = Field(..., min_length=1, max_length=20)
+    scenario: str | None = Field(default=None, max_length=80)
+    as_of: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    allow_generate: bool = Field(default=True, description="题库缺题时允许基于资料补生成草稿")
+
+
+class PaperData(BaseModel):
+    id: str
+    course_id: str
+    title: str
+    description: str = ""
+    question_count: int = 0
+    total_score: float = 0
+    created_at: str
+    updated_at: str
+    items: list[dict] = []
+
+
+class PaperAssembleData(BaseModel):
+    paper: PaperData
+    reused_count: int = 0
+    generated_count: int = 0
+    total_score: float = 0
 
 
 class LLMPatch(BaseModel):

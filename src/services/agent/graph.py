@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 from functools import partial
+from datetime import date
 
 from src.config import config
-from src.exceptions import BadRequestException, ServiceUnavailableException
+from src.exceptions import BadRequestException, LLMAPIException, ServiceUnavailableException
 from src.services.agent import nodes
 from src.services.agent.state import AgentState
+from src.services.evidence_metadata import normalize_scope
 from src.services.llm import OpenAIClient
 from src.services.storage.vector_store import ChromaVectorStore
 
@@ -58,6 +60,29 @@ def build_agent_graph(vs: ChromaVectorStore, llm: OpenAIClient):
     return graph.compile()
 
 
+def build_agentic_graph(vs: ChromaVectorStore, llm: OpenAIClient):
+    """P2-C：模型决定工具调用，图只负责受控路由与循环上限。"""
+    END, StateGraph = _import_langgraph()
+    graph = StateGraph(AgentState)
+    graph.add_node("agent", partial(nodes.agentic_agent_node, llm=llm))
+    graph.add_node("tool", partial(nodes.agentic_tool_node, vs=vs, llm=llm))
+    graph.add_node("refuse", nodes.refuse_node)
+    graph.add_node("finish", nodes.finish_node)
+    graph.set_entry_point("agent")
+
+    def route(state: AgentState) -> str:
+        decision = state.get("decision") or "refuse"
+        if decision == "tools":
+            return "tool" if int(state.get("tool_rounds", 0)) < int(state["max_steps"]) else "refuse"
+        return "finish" if decision == "finish" else "refuse"
+
+    graph.add_conditional_edges("agent", route, {"tool": "tool", "finish": "finish", "refuse": "refuse"})
+    graph.add_edge("tool", "agent")
+    graph.add_edge("refuse", "finish")
+    graph.add_edge("finish", END)
+    return graph.compile()
+
+
 def run_agent(
     question: str,
     course_id: str,
@@ -68,6 +93,9 @@ def run_agent(
     max_steps: int = _DEFAULT_MAX_STEPS,
     top_k: int | None = None,
     score_threshold: float | None = None,
+    scenario: str | None = None,
+    as_of: str | None = None,
+    agentic: bool = False,
 ) -> dict:
     """执行 Agent 循环，返回 answer / citations / grounded / steps / queries。"""
     if mode not in _SUPPORTED_MODES:
@@ -80,13 +108,18 @@ def run_agent(
         raise BadRequestException("问题内容不能为空")
     if not course_id or not course_id.strip():
         raise BadRequestException("course_id 不能为空")
+    if as_of:
+        try:
+            date.fromisoformat(as_of)
+        except ValueError as exc:
+            raise BadRequestException("as_of 必须是有效日期，格式 YYYY-MM-DD") from exc
+    scenario = normalize_scope(scenario) if scenario else None
 
     if top_k is None:
         top_k = config.retrieval.top_k
     if score_threshold is None:
         score_threshold = config.retrieval.score_threshold
 
-    graph = build_agent_graph(vs, llm)
     initial: AgentState = {
         "question": question,
         "course_id": course_id,
@@ -103,12 +136,28 @@ def run_agent(
         "answer": "",
         "grounded": False,
         "decision": "",
+        "scenario": scenario,
+        "as_of": as_of,
+        "messages": [],
+        "pending_tool_calls": [],
+        "tool_calls": [],
+        "tool_rounds": 0,
     }
-    final = graph.invoke(initial)
+    used_agentic = bool(agentic and llm.configured)
+    if used_agentic:
+        try:
+            final = build_agentic_graph(vs, llm).invoke(initial)
+        except LLMAPIException as exc:
+            logger.warning("Agentic tool calling 不可用，降级 P2-B: %s", exc)
+            used_agentic = False
+            final = build_agent_graph(vs, llm).invoke(initial)
+    else:
+        final = build_agent_graph(vs, llm).invoke(initial)
 
     logger.info(
-        "Agent 完成: course=%s steps=%d grounded=%s",
+        "Agent 完成: course=%s agentic=%s steps=%d grounded=%s",
         course_id,
+        used_agentic,
         len(final.get("steps") or []),
         bool(final.get("grounded")),
     )
@@ -118,5 +167,7 @@ def run_agent(
         "grounded": bool(final.get("grounded", False)),
         "steps": final.get("steps") or [],
         "queries": final.get("queries") or [],
+        "tool_calls": final.get("tool_calls") or [],
+        "agentic": used_agentic,
         "agent_used": True,
     }
