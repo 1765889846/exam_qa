@@ -452,6 +452,124 @@
   font-size: 0.95rem;
 }
 
+.sz-docs-classify {
+  flex: 0 0 auto;
+  margin-top: 1.4rem;
+  padding-top: 1rem;
+  border-top: 1px solid color-mix(in srgb, var(--sz-border) 70%, transparent);
+}
+
+.sz-classify-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sz-classify-label {
+  color: var(--sz-text-muted);
+  font-size: 0.85rem;
+}
+
+.sz-classify-select {
+  appearance: none;
+  font-family: var(--sz-font-ui);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--sz-text);
+  background: var(--sz-bg-panel);
+  border: 1px solid var(--sz-border);
+  border-radius: 999px;
+  padding: 0.4rem 2rem 0.4rem 0.85rem;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--sz-text-muted) 50%),
+    linear-gradient(135deg, var(--sz-text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 0.9rem) 55%, calc(100% - 0.65rem) 55%;
+  background-size: 0.35rem 0.35rem, 0.35rem 0.35rem;
+  background-repeat: no-repeat;
+}
+
+.sz-classify-select:hover,
+.sz-classify-select:focus {
+  border-color: color-mix(in srgb, var(--sz-accent) 45%, var(--sz-border));
+  outline: none;
+}
+
+.sz-classify-result {
+  margin-top: 0.7rem;
+}
+
+.sz-classify-summary {
+  margin: 0 0 0.7rem;
+  color: var(--sz-text-muted);
+  font-size: 0.85rem;
+}
+
+.sz-classify-groups {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.sz-classify-group {
+  padding: 0.8rem 0.95rem;
+  border-radius: var(--sz-radius-md);
+  background: var(--sz-bg-panel);
+  border: 1px solid var(--sz-border);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--sz-text) 3.5%, transparent);
+}
+
+.sz-classify-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+}
+
+.sz-classify-name {
+  min-width: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--sz-text);
+  overflow-wrap: anywhere;
+}
+
+.sz-classify-count {
+  flex: 0 0 auto;
+  font-family: var(--sz-font-ui);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--sz-accent) 35%, var(--sz-border));
+  color: var(--sz-accent);
+  background: color-mix(in srgb, var(--sz-accent) 8%, var(--sz-bg-surface));
+  font-variant-numeric: tabular-nums;
+}
+
+.sz-classify-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.sz-classify-files li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--sz-text-muted);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.sz-classify-files li .sz-classify-count {
+  font-size: 0.68rem;
+  padding: 0.12rem 0.42rem;
+}
+
 @media (max-width: 960px) {
   .sz-docs-page {
     grid-template-columns: 1fr;

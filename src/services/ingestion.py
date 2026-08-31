@@ -7,6 +7,7 @@ from pathlib import Path
 from src.config import config
 from src.exceptions import AppException, BadRequestException, ServiceUnavailableException, UnsupportedFormatException
 from src.services.embedding import get_embedding_client
+from src.services.evidence_metadata import extract_evidence_metadata
 from src.services.parsing import SUPPORTED_EXTENSIONS, parse_file
 from src.services.retrieval import invalidate_bm25_cache
 from src.services.storage.catalog_store import (
@@ -27,6 +28,20 @@ _CHAPTER_TITLE = re.compile(
     re.IGNORECASE,
 )
 _MD_HEADER = re.compile(r"^(#{1,3})\s+(.+)$", re.MULTILINE)
+
+# 结构化分块（MinerU blocks）用到的 block 类型
+_TEXT_LIKE_BLOCKS = frozenset(
+    {
+        "text",
+        "formula",
+        "formula_inline",
+        "caption",
+        "image_caption",
+        "table_caption",
+        "figure_caption",
+    }
+)
+_MARGIN_BLOCKS = frozenset({"header", "footer"})
 
 
 _LATEX_BLOCK = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
@@ -124,6 +139,151 @@ def _chunk_document(
     for page in parsed.pages:
         for chunk in _split_text(page.text, chunk_size=chunk_size, chunk_overlap=chunk_overlap):
             out.append((chunk, page.page))
+    return out
+
+
+def _section_label(section_path: str) -> str:
+    """section_path 最后一级，作为该片段的上下文说明。"""
+    return section_path.split(" / ")[-1] if section_path else ""
+
+
+def _chunk_structured(
+    parsed,
+    *,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> list[dict]:
+    """按 MinerU block 语义切片，输出带丰富 metadata 的 chunk。
+
+    - 标题层级 → section_path（如「第一章 绪论 / 1.1 通信系统模型」）；
+    - 标题与段落合并为文本组，超长按句切分，保持层级关系；
+    - 独立表格结构化提取（列头进 metadata，长表格行列转文本）；
+    - 图片/图表独立成组：配置视觉模型则生成多模态摘要，否则用说明占位；
+    - 每个切片带上下文说明（所属小节标题）与 block 元数据。
+    """
+    from src.services.parsing import _summarize_image, _table_headers
+
+    out: list[dict] = []
+    section_stack: list[str] = []
+    group: dict | None = None
+
+    def _section_path() -> str:
+        return " / ".join(section_stack)
+
+    def _new_group(page: int | None) -> dict:
+        return {
+            "parts": [],
+            "page": page,
+            "block_type": "text",
+            "table_headers": "",
+            "section_path": _section_path(),
+        }
+
+    def _flush() -> None:
+        nonlocal group
+        if group is None:
+            return
+        body = "\n\n".join(p for p in group["parts"] if p and p.strip()).strip()
+        page = group["page"]
+        block_type = group["block_type"]
+        table_headers = group["table_headers"]
+        section_path = group["section_path"]
+        group = None
+        if not body:
+            return
+        prefix = _section_label(section_path)
+        context = f"§ {prefix}\n" if prefix else ""
+        chapter = prefix or (f"第{page}页" if page else "")
+        for piece in _split_text(body, chunk_size=chunk_size, chunk_overlap=chunk_overlap):
+            if context and not piece.startswith(context):
+                piece = context + piece
+            out.append(
+                {
+                    "text": piece,
+                    "page": page,
+                    "chapter": chapter,
+                    "block_type": block_type,
+                    "section_path": section_path,
+                    "table_headers": table_headers,
+                    "context": context.strip(),
+                }
+            )
+
+    def _standalone(block, text: str, block_type: str, headers: str = "") -> None:
+        section_path = _section_path()
+        prefix = _section_label(section_path)
+        out.append(
+            {
+                "text": text,
+                "page": block.page,
+                "chapter": prefix or (f"第{block.page}页" if block.page else ""),
+                "block_type": block_type,
+                "section_path": section_path,
+                "table_headers": headers,
+                "context": prefix,
+            }
+        )
+
+    for block in parsed.blocks:
+        btype = block.block_type
+        if btype in _MARGIN_BLOCKS:
+            # 页眉页脚保留在结构里，但不进检索正文（避免污染切片）
+            logger.info("跳过页眉页脚 block: %s 第%s页", btype, block.page or "?")
+            continue
+
+        if btype == "title":
+            _flush()
+            title = block.text.strip()
+            level = max(1, block.level or 1)
+            while section_stack and len(section_stack) >= level:
+                section_stack.pop()
+            section_stack.append(title)
+            group = _new_group(block.page)
+            group["parts"].append(title)
+            continue
+
+        if btype == "table":
+            _flush()
+            text = block.text.strip()
+            if block.caption:
+                text = f"{text}\n\n表格说明：{block.caption}" if text else f"表格说明：{block.caption}"
+            if text:
+                _standalone(block, text, "table", headers=_table_headers(block.html))
+            continue
+
+        if btype == "image":
+            _flush()
+            summary = _summarize_image(block.image_path, block.caption, block.page)
+            if summary:
+                _standalone(block, summary, "image_summary")
+            elif block.caption:
+                _standalone(block, f"图片说明：{block.caption}", "image")
+            else:
+                logger.info(
+                    "图片无摘要无说明，跳过入库: 第%s页 %s",
+                    block.page or "?",
+                    block.image_path or "",
+                )
+            continue
+
+        # 文本类：段落/公式/独立说明，合并进当前文本组
+        if btype in _TEXT_LIKE_BLOCKS or btype.startswith("text"):
+            if group is None:
+                group = _new_group(block.page)
+            elif group["page"] != block.page:
+                _flush()
+                group = _new_group(block.page)
+            if block.text and block.text.strip():
+                group["parts"].append(block.text.strip())
+            continue
+
+        # 未知类型 block：按文本兜底，避免丢失内容
+        if group is None:
+            group = _new_group(block.page)
+        if block.text and block.text.strip():
+            group["parts"].append(block.text.strip())
+
+    _flush()
     return out
 
 
@@ -240,6 +400,8 @@ def _acquire_doc_id(
     filename: str,
     course: str,
     course_id: str,
+    *,
+    is_active: bool = True,
 ) -> int:
     """同路径且同课程复用记录；跨课程占用同路径则拒绝，避免串课。"""
     resolved = str(filepath.resolve())
@@ -262,6 +424,7 @@ def _acquire_doc_id(
         file_path=resolved,
         course=course,
         course_id=course_id,
+        is_active=is_active,
     )
     ds.update_status(doc_id, "processing")
     return doc_id
@@ -320,6 +483,9 @@ def ingest_file(
     course: str = DEFAULT_COURSE_NAME,
     college_id: str = DEFAULT_COLLEGE_ID,
     display_name: str | None = None,
+    *,
+    is_active: bool = True,
+    parsed_document=None,
 ) -> str:
     """入库单文件，返回 doc_id。"""
     if not course_id or not course_id.strip():
@@ -336,27 +502,70 @@ def ingest_file(
             f"不支持的文件格式: {ext}，仅接受 PDF/TXT/MD/DOC/DOCX/PPTX"
         )
 
-    doc_id = _acquire_doc_id(ds, vs, filepath, filename, course, course_id)
+    doc_id = _acquire_doc_id(
+        ds, vs, filepath, filename, course, course_id, is_active=is_active
+    )
     logger.info("文档记录就绪: doc_id=%s", doc_id)
 
     try:
-        parsed = parse_file(path)
+        parsed = parsed_document if parsed_document is not None else parse_file(path)
         full_text = parsed.full_text
         if not full_text.strip():
             raise BadRequestException("解析后内容为空")
 
-        raw_chunks = _chunk_document(
-            parsed,
-            chunk_size=config.chunk.chunk_size,
-            chunk_overlap=config.chunk.chunk_overlap,
-        )
-        if not raw_chunks:
-            raise BadRequestException("分块结果为空")
+        current_metadata = ds.get(doc_id) or {}
+        if current_metadata.get("metadata_source") == "manual":
+            evidence = {
+                key: current_metadata[key]
+                for key in (
+                    "source_version",
+                    "effective_from",
+                    "effective_to",
+                    "authority_level",
+                    "authority_label",
+                    "applicability_scope",
+                    "metadata_confidence",
+                    "metadata_source",
+                )
+            }
+        else:
+            evidence = extract_evidence_metadata(full_text, filename).to_dict()
+            ds.update_evidence_metadata(doc_id, evidence)
 
-        chunk_texts = [c[0] for c in raw_chunks]
-        chunk_pages = [c[1] for c in raw_chunks]
-        chapters = assign_chapters(full_text, chunk_texts, pages=chunk_pages)
-        chunk_texts = _enrich_chunks_with_context(full_text, chunk_texts)
+        if parsed.has_blocks:
+            # MinerU 结构化切片：语义分组 + 丰富 metadata
+            structured = _chunk_structured(
+                parsed,
+                chunk_size=config.chunk.chunk_size,
+                chunk_overlap=config.chunk.chunk_overlap,
+            )
+            chunk_texts = [c["text"] for c in structured]
+            chunk_pages = [c["page"] for c in structured]
+            chapters = [c["chapter"] for c in structured]
+            block_types = [c["block_type"] for c in structured]
+            section_paths = [c["section_path"] for c in structured]
+            table_headers = [c["table_headers"] for c in structured]
+            contexts = [c["context"] for c in structured]
+        else:
+            # 非结构化文档：保持原有按页分块 + 章节推断
+            raw_chunks = _chunk_document(
+                parsed,
+                chunk_size=config.chunk.chunk_size,
+                chunk_overlap=config.chunk.chunk_overlap,
+            )
+            if not raw_chunks:
+                raise BadRequestException("分块结果为空")
+            chunk_texts = [c[0] for c in raw_chunks]
+            chunk_pages = [c[1] for c in raw_chunks]
+            chapters = assign_chapters(full_text, chunk_texts, pages=chunk_pages)
+            chunk_texts = _enrich_chunks_with_context(full_text, chunk_texts)
+            block_types = ["text"] * len(chunk_texts)
+            section_paths = [""] * len(chunk_texts)
+            table_headers = [""] * len(chunk_texts)
+            contexts = [""] * len(chunk_texts)
+
+        if not chunk_texts:
+            raise BadRequestException("分块结果为空")
         logger.info("分块完成: %s, 共 %d 个 chunk", filename, len(chunk_texts))
 
         embeddings = embed_texts(chunk_texts)
@@ -373,6 +582,12 @@ def ingest_file(
                 "text": chunk_text,
                 "page": chunk_pages[i],
                 "chapter": chapters[i] if i < len(chapters) else "",
+                "block_type": block_types[i] if i < len(block_types) else "",
+                "section_path": section_paths[i] if i < len(section_paths) else "",
+                "table_headers": table_headers[i] if i < len(table_headers) else "",
+                "context": contexts[i] if i < len(contexts) else "",
+                "is_active": is_active,
+                **evidence,
             })
 
         wiped = _upsert_chunks_batched(vs, chunk_dicts, embeddings)
@@ -415,11 +630,11 @@ def scan_knowledge_dir(
     college_id: str = DEFAULT_COLLEGE_ID,
     recover_stale: bool = False,
     force: bool = False,
-) -> None:
+) -> list[dict]:
     """扫描 knowledge；force=True 时对已 done 文件也重入库（补 chapter 等）。"""
     data_dir = Path(config.storage.knowledge_dir)
     if not data_dir.exists():
-        return
+        return []
 
     if recover_stale:
         stale = ds.recover_stale_processing()
@@ -431,8 +646,33 @@ def scan_knowledge_dir(
         for f in data_dir.iterdir()
         if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
     ]
-    to_ingest: list[Path] = []
+    results: list[dict] = []
+    # PDF 走内容指纹与版本切换；在函数内导入以避免与 ingest_file 的循环依赖。
+    from src.services.document_updates import ingest_or_update_pdf
+
+    non_pdf_files: list[Path] = []
     for f in files:
+        if f.suffix.lower() == ".pdf":
+            try:
+                outcome = ingest_or_update_pdf(
+                    path=str(f.resolve()),
+                    vs=vs,
+                    ds=ds,
+                    course_id=course_id,
+                    course=course,
+                    college_id=college_id,
+                    knowledge_dir=str(data_dir),
+                    force=force,
+                )
+                results.append(outcome.to_dict())
+            except Exception as e:
+                logger.warning("PDF 自动更新失败 %s: %s", f.name, e)
+                results.append({"action": "failed", "filename": f.name, "message": str(e)})
+            continue
+        non_pdf_files.append(f)
+
+    to_ingest: list[Path] = []
+    for f in non_pdf_files:
         resolved = str(f.resolve())
         mtime = f.stat().st_mtime
         existing = ds.find_by_path(resolved)
@@ -451,7 +691,7 @@ def scan_knowledge_dir(
             to_ingest.append(f)
 
     if not to_ingest:
-        return
+        return results
 
     logger.info(
         "发现 %d 个待入库/更新文件%s，开始扫描入库…",
@@ -469,5 +709,8 @@ def scan_knowledge_dir(
                 college_id=college_id,
             )
             logger.info("扫描入库: %s -> doc_id=%s", f.name, doc_id)
+            results.append({"action": "created", "doc_id": doc_id, "filename": f.name})
         except Exception as e:
             logger.warning("扫描入库失败 %s: %s", f.name, e)
+            results.append({"action": "failed", "filename": f.name, "message": str(e)})
+    return results

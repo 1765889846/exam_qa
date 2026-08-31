@@ -3,6 +3,7 @@
 import logging
 
 from src.config import config
+from src.services.evidence_metadata import evidence_reason
 from src.services.llm import OpenAIClient
 
 logger = logging.getLogger(__name__)
@@ -57,15 +58,25 @@ def _format_context(chunks: list[dict]) -> str:
 
 
 def _build_citations(chunks: list[dict]) -> list[dict]:
-    return [
-        {
-            "source_file": c.get("metadata", {}).get("source_file", "未知"),
-            "page": c.get("metadata", {}).get("page"),
-            "snippet": c.get("text", "")[:200].replace("\n", " "),
-            "score": round(c.get("score", 0), 4),
-        }
-        for c in chunks
-    ]
+    citations = []
+    for chunk in chunks:
+        meta = chunk.get("metadata", {})
+        citations.append(
+            {
+                "source_file": meta.get("source_file", "未知"),
+                "page": meta.get("page"),
+                "snippet": chunk.get("text", "")[:200].replace("\n", " "),
+                "score": round(chunk.get("score", 0), 4),
+                "source_version": meta.get("source_version", ""),
+                "effective_from": meta.get("effective_from", "0001-01-01"),
+                "effective_to": meta.get("effective_to", "9999-12-31"),
+                "authority_level": int(meta.get("authority_level") or 30),
+                "authority_label": meta.get("authority_label", "教学材料"),
+                "applicability_scope": meta.get("applicability_scope", "all"),
+                "selection_reason": evidence_reason(meta, scenario=None, as_of=None),
+            }
+        )
+    return citations
 
 
 def _build_messages(

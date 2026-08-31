@@ -75,3 +75,10 @@ class TestConversationStore:
         conv_store.append_message(conv["id"], "user", "q")
         conv_store.append_message(conv["id"], "assistant", "a")
         assert conv_store.count_messages(conv["id"]) == 2
+
+    def test_get_latest_user_intent(self, conv_store):
+        conv = conv_store.create_conversation("course-1")
+        intent = {"task": "rule_query", "mode": "qa", "scenario": "考试"}
+        conv_store.append_message(conv["id"], "user", "考试能带计算器吗", intent=intent)
+        conv_store.append_message(conv["id"], "assistant", "请以规定为准")
+        assert conv_store.get_latest_user_intent(conv["id"]) == intent

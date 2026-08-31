@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 OUT = Path(__file__).resolve().parents[3] / "data" / "knowledge"
 
@@ -224,7 +225,26 @@ $word.Quit()
         Path(txt_path).unlink(missing_ok=True)
 
 
+SAMPLE_FILES = (
+    "laplace-transform.txt",
+    "eigenvalues.docx",
+    "bayes-theorem.pptx",
+    "ode-first-order.pdf",
+    "determinants.doc",
+)
+
+
+def cleanup() -> None:
+    """删除 generate_samples 写入的测试样本。"""
+    for name in SAMPLE_FILES:
+        (OUT / name).unlink(missing_ok=True)
+
+
 def main() -> None:
+    if "--clean" in sys.argv:
+        cleanup()
+        print("已清理测试样本")
+        return
     OUT.mkdir(parents=True, exist_ok=True)
     write_txt()
     print("txt")

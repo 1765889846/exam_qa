@@ -51,6 +51,36 @@ class TestDocumentsAPI:
         data = r.json()["data"]
         assert "items" in data and "embedding" in data
 
+    def test_summary_by_type_default(self):
+        r = client.get(
+            "/api/v1/documents/summary",
+            params={"course_id": "course-default"},
+        )
+        assert r.status_code == 200
+        data = r.json()["data"]
+        assert data["dimension"] == "type"
+        assert "groups" in data and "total" in data
+
+    def test_summary_by_chapter(self):
+        r = client.get(
+            "/api/v1/documents/summary",
+            params={"course_id": "course-default", "by": "chapter"},
+        )
+        assert r.status_code == 200
+        data = r.json()["data"]
+        assert data["dimension"] == "chapter"
+        assert "groups" in data and "total_chunks" in data
+        for group in data["groups"]:
+            assert "chapter" in group and "chunk_count" in group
+
+    def test_summary_rejects_unknown_dimension(self):
+        r = client.get(
+            "/api/v1/documents/summary",
+            params={"course_id": "course-default", "by": "bogus"},
+        )
+        assert r.status_code == 422
+
+
     def test_scan_and_unknown_course(self):
         ok = client.post(
             "/api/v1/documents/scan",

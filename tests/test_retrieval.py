@@ -6,6 +6,7 @@ from src.services.rerank import clear_reranker, rerank
 from src.services.retrieval import (
     _BM25,
     _bm25_search,
+    _select_evidence,
     clear_query_embed_cache,
     invalidate_bm25_cache,
     retrieve,
@@ -89,6 +90,15 @@ def test_rrf_prefers_agreement():
     fused = rrf_fuse(a, b, top_k=3)
     assert fused[0]["id"] == "y"
     assert {h["id"] for h in fused} == {"x", "y", "z"}
+
+
+def test_evidence_selection_prefers_authority_then_newer_effective_time():
+    hits = [
+        {"id": "course", "score": 0.99, "metadata": {"authority_level": 40, "effective_from": "2026-01-01"}},
+        {"id": "rule-old", "score": 0.70, "metadata": {"authority_level": 80, "effective_from": "2025-01-01"}},
+        {"id": "rule-new", "score": 0.50, "metadata": {"authority_level": 80, "effective_from": "2026-01-01"}},
+    ]
+    assert [hit["id"] for hit in _select_evidence(hits)] == ["rule-new", "rule-old", "course"]
 
 
 def test_retrieve_filters_below_threshold():

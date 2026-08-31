@@ -83,13 +83,27 @@ def rrf_fuse(*ranked_lists: list[dict], k: int = RRF_K, top_k: int) -> list[dict
     ]
 
 
-def _vector_search(query: str, vs: ChromaVectorStore, course_id: str, top_k: int) -> list[dict]:
+def _vector_search(
+    query: str,
+    vs: ChromaVectorStore,
+    course_id: str,
+    top_k: int,
+    *,
+    scenario: str | None = None,
+    as_of: str | None = None,
+) -> list[dict]:
     try:
         query_vec = list(_cached_query_vec(_embed_cache_key(), query))
     except Exception as e:
         logger.error("检索向量化失败: %s", e)
         raise ServiceUnavailableException("向量化服务不可用", detail=str(e)) from e
-    return vs.search(query_vec, top_k=top_k, course_id=course_id)
+    # 保持无证据约束时的调用形态，兼容现有工具实现；有约束才传给向量库。
+    kwargs: dict[str, object] = {"top_k": top_k, "course_id": course_id}
+    if scenario:
+        kwargs["scenario"] = scenario
+    if as_of:
+        kwargs["as_of"] = as_of
+    return vs.search(query_vec, **kwargs)
 
 
 _BM25_CACHE: dict[str, tuple[list[dict], _BM25]] = {}
@@ -114,7 +128,27 @@ def invalidate_bm25_cache(course_id: str | None = None) -> None:
         _BM25_CACHE.pop(course_id, None)
 
 
-def _bm25_search(query: str, vs: ChromaVectorStore, course_id: str, top_k: int) -> list[dict]:
+def _is_applicable(meta: dict, scenario: str | None, as_of: str | None) -> bool:
+    scope = str(meta.get("applicability_scope") or "all")
+    if scenario and scenario != "all" and scope not in ("all", scenario):
+        return False
+    if as_of:
+        start = str(meta.get("effective_from") or "0001-01-01")
+        end = str(meta.get("effective_to") or "9999-12-31")
+        if not (start <= as_of <= end):
+            return False
+    return True
+
+
+def _bm25_search(
+    query: str,
+    vs: ChromaVectorStore,
+    course_id: str,
+    top_k: int,
+    *,
+    scenario: str | None = None,
+    as_of: str | None = None,
+) -> list[dict]:
     corpus, bm25 = _bm25_for_course(vs, course_id)
     if not corpus:
         return []
@@ -129,9 +163,24 @@ def _bm25_search(query: str, vs: ChromaVectorStore, course_id: str, top_k: int) 
         if raw[i] <= 0 or len(hits) >= top_k:
             break
         hit = dict(corpus[i])
+        if not _is_applicable(hit.get("metadata") or {}, scenario, as_of):
+            continue
         hit["score"] = (raw[i] / max_s) if max_s > 0 else 0.0
         hits.append(hit)
     return hits
+
+
+def _select_evidence(hits: list[dict]) -> list[dict]:
+    """在已相关、已过滤的候选中按权威等级和生效时间选择更适用的证据。"""
+    return sorted(
+        hits,
+        key=lambda hit: (
+            int((hit.get("metadata") or {}).get("authority_level") or 0),
+            str((hit.get("metadata") or {}).get("effective_from") or "0001-01-01"),
+            float(hit.get("score") or 0.0),
+        ),
+        reverse=True,
+    )
 
 
 def retrieve(
@@ -142,6 +191,8 @@ def retrieve(
     *,
     score_threshold: float | None = None,
     rerank_enabled: bool | None = None,
+    scenario: str | None = None,
+    as_of: str | None = None,
 ) -> list[dict]:
     if top_k is None:
         top_k = config.retrieval.top_k
@@ -166,8 +217,12 @@ def retrieve(
         pool = top_k * 2
         fuse_k = top_k
 
-    vec_hits = _vector_search(q, vs, course_id, pool)
-    bm25_hits = _bm25_search(q, vs, course_id, pool)
+    vec_hits = _vector_search(
+        q, vs, course_id, pool, scenario=scenario, as_of=as_of
+    )
+    bm25_hits = _bm25_search(
+        q, vs, course_id, pool, scenario=scenario, as_of=as_of
+    )
     fused = (
         rrf_fuse(vec_hits, bm25_hits, top_k=fuse_k) if (vec_hits or bm25_hits) else []
     )
@@ -186,9 +241,12 @@ def retrieve(
     else:
         kept = [h for h in fused if h.get("score", 0) >= score_threshold]
 
+    if scenario or as_of:
+        kept = _select_evidence(kept)
+
     logger.info(
-        "混合检索: course=%s top_k=%d rerank=%s vec=%d bm25=%d kept=%d",
-        course_id,
+        "混合检索: course=%s scenario=%s as_of=%s top_k=%d rerank=%s vec=%d bm25=%d kept=%d",
+        course_id, scenario or "all", as_of or "latest",
         top_k,
         rerank_enabled,
         len(vec_hits),
@@ -196,4 +254,3 @@ def retrieve(
         len(kept),
     )
     return kept
-

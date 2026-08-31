@@ -71,6 +71,16 @@ def _build_config_data(request: Request) -> dict:
             "pdf_use_ocr": config.parsing.pdf_use_ocr,
             "pdf_force_ocr": config.parsing.pdf_force_ocr,
             "pdf_ocr_language": config.parsing.pdf_ocr_language,
+            "pdf_parser": config.parsing.pdf_parser,
+            "mineru_cmd": config.parsing.mineru_cmd,
+            "mineru_timeout": config.parsing.mineru_timeout,
+            "visual_model": config.parsing.visual_model,
+            "visual_base_url": config.parsing.visual_base_url,
+            "visual_timeout": config.parsing.visual_timeout,
+            "visual_configured": bool(
+                config.parsing.visual_model
+                and (config.parsing.visual_api_key or config.llm.api_key)
+            ),
         },
         "server": {
             "host": config.host,
@@ -176,6 +186,30 @@ def _patch_to_env(body: ConfigUpdateRequest) -> tuple[dict[str, str], list[str]]
             updates["PDF_FORCE_OCR"] = "true" if p["pdf_force_ocr"] else "false"
         if "pdf_ocr_language" in p:
             updates["PDF_OCR_LANGUAGE"] = p["pdf_ocr_language"].strip()
+        if "pdf_parser" in p:
+            parser = str(p["pdf_parser"]).strip().lower()
+            if parser not in ("auto", "pymupdf", "mineru"):
+                raise BadRequestException("pdf_parser 可选 auto / pymupdf / mineru")
+            updates["PDF_PARSER"] = parser
+        if "mineru_cmd" in p:
+            cmd = str(p["mineru_cmd"]).strip()
+            if not cmd:
+                raise BadRequestException("mineru_cmd 不能为空")
+            updates["MINERU_CMD"] = cmd
+        if "mineru_timeout" in p:
+            if p["mineru_timeout"] < 0:
+                raise BadRequestException("mineru_timeout 不能为负")
+            updates["MINERU_TIMEOUT"] = str(p["mineru_timeout"])
+        if "visual_model" in p:
+            updates["VISUAL_MODEL"] = p["visual_model"].strip()
+        if "visual_base_url" in p:
+            updates["VISUAL_BASE_URL"] = p["visual_base_url"].strip()
+        if "visual_api_key" in p and p["visual_api_key"] != MASKED_SECRET:
+            updates["VISUAL_API_KEY"] = p["visual_api_key"].strip()
+        if "visual_timeout" in p:
+            if p["visual_timeout"] < 0:
+                raise BadRequestException("visual_timeout 不能为负")
+            updates["VISUAL_TIMEOUT"] = str(p["visual_timeout"])
 
     if body.app is not None:
         patched.append("app")

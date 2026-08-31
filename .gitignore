@@ -58,3 +58,4 @@ desktop.ini
 .uv-cache/
 .pytest-tmp/
 
+pytest_v3.txt

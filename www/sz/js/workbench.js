@@ -12,15 +12,15 @@ import {
 } from "../../shared/js/conversations.js";
 
 const ASK_MODE_KEY = "sz.ask_mode";
-const ASK_MODES = new Set(["qa", "concept", "chapter"]);
+const ASK_MODES = new Set(["auto", "qa", "concept", "chapter"]);
 
 function getAskMode() {
   const m = localStorage.getItem(ASK_MODE_KEY);
-  return ASK_MODES.has(m) ? m : "qa";
+  return ASK_MODES.has(m) ? m : "auto";
 }
 
 function setAskMode(mode) {
-  localStorage.setItem(ASK_MODE_KEY, ASK_MODES.has(mode) ? mode : "qa");
+  localStorage.setItem(ASK_MODE_KEY, ASK_MODES.has(mode) ? mode : "auto");
 }
 
 function escapeHtml(s) {
@@ -73,7 +73,7 @@ function renderTurnHtml(turn) {
   const grounded = turn.grounded;
   const groundedAttr =
     grounded === false ? ` data-grounded="false"` : grounded === true ? ` data-grounded="true"` : "";
-  const mode = ASK_MODES.has(turn.mode) ? turn.mode : "qa";
+  const mode = ASK_MODES.has(turn.mode) ? turn.mode : "auto";
   return `<div class="sz-turn" data-mode="${mode}">
     <div class="sz-q"></div>
     <div class="sz-a"${groundedAttr}></div>
@@ -82,6 +82,7 @@ function renderTurnHtml(turn) {
 }
 
 function modeLabel(mode) {
+  if (mode === "auto") return "自动识别";
   if (mode === "concept") return "知识点";
   if (mode === "chapter") return "章节概览";
   return "自由问答";
@@ -89,7 +90,7 @@ function modeLabel(mode) {
 
 function paintTurn(node, turn) {
   const q = node.querySelector(".sz-q");
-  const mode = ASK_MODES.has(turn.mode) ? turn.mode : "qa";
+  const mode = ASK_MODES.has(turn.mode) ? turn.mode : "auto";
   node.dataset.mode = mode;
   q.replaceChildren();
   const label = document.createElement("span");
@@ -249,7 +250,7 @@ function setupAsk() {
 
   modeEl.value = getAskMode();
   const syncModeUi = () => {
-    const mode = ASK_MODES.has(modeEl.value) ? modeEl.value : "qa";
+  const mode = ASK_MODES.has(modeEl.value) ? modeEl.value : "auto";
     setAskMode(mode);
     if (mode === "concept") {
       input.placeholder = "输入知识点名称，如：卷积定理";
@@ -258,7 +259,7 @@ function setupAsk() {
       input.placeholder = "输入章节名，如：第3章 傅里叶变换";
       if (submitBtn) submitBtn.textContent = "概览";
     } else {
-      input.placeholder = "输入问题…";
+      input.placeholder = mode === "auto" ? "输入问题，自动识别章节、规则与场景…" : "输入问题…";
       if (submitBtn) submitBtn.textContent = "提问";
     }
     if (streamEl.querySelector(".sz-ask-empty")) showAskEmpty();
@@ -279,7 +280,7 @@ function setupAsk() {
 
     const question = input.value.trim();
     const courseId = getCourseId();
-    const mode = ASK_MODES.has(modeEl.value) ? modeEl.value : "qa";
+    const mode = ASK_MODES.has(modeEl.value) ? modeEl.value : "auto";
     if (!question || !courseId) {
       toast("需要课程与问题", "error");
       return;
@@ -290,6 +291,7 @@ function setupAsk() {
     }
 
     let answer = "";
+    let resolvedMode = mode;
     const turnWrap = document.createElement("div");
     turnWrap.className = "sz-turn";
     turnWrap.dataset.mode = mode;
@@ -316,6 +318,7 @@ function setupAsk() {
       const convId = getActiveConversationId(courseId);
       await apiAskStream({ question, course_id: courseId, mode, conversation_id: convId || undefined }, (ev) => {
         if (ev.type === "phase") {
+          if (ev.intent?.mode) resolvedMode = ev.intent.mode;
           live.dataset.phase = ev.phase || "";
           if (!answer) {
             live.textContent =
@@ -356,7 +359,7 @@ function setupAsk() {
       });
 
       if (finished) {
-        appendTurn(courseId, { question, answer, citations, grounded, mode });
+        appendTurn(courseId, { question, answer, citations, grounded, mode: resolvedMode });
         refreshHistoryList();
       }
     } catch (err) {

@@ -5,12 +5,14 @@ import pytest
 from src.exceptions import BadRequestException
 from src.services.ingestion import (
     _acquire_doc_id,
+    _chunk_structured,
     _fail_ingest,
     _needs_reindex,
     _split_text,
     assign_chapters,
     scan_knowledge_dir,
 )
+from src.services.parsing import ParsedBlock, ParsedDocument
 from src.services.storage.catalog_store import DEFAULT_COURSE_ID, DEFAULT_COURSE_NAME
 
 _COURSE = DEFAULT_COURSE_NAME
@@ -40,6 +42,74 @@ class TestSplitText:
         chunks = _split_text(text, chunk_size=100, chunk_overlap=20)
         assert len(chunks) >= 2
         assert chunks[0][-20:] in chunks[1]
+
+
+class TestChunkStructured:
+    """MinerU 结构化分块：层级保留、表格独立、metadata 丰富。"""
+
+    def _parsed(self):
+        blocks = [
+            ParsedBlock(block_type="header", text="信号与系统", page=1),
+            ParsedBlock(block_type="title", text="第一章 绪论", page=1, level=1),
+            ParsedBlock(block_type="title", text="1.1 通信系统模型", page=1, level=2),
+            ParsedBlock(
+                block_type="text",
+                text="通信系统由信源、信道和信宿组成。信源产生消息。",
+                page=1,
+            ),
+            ParsedBlock(
+                block_type="table",
+                text="名称 | 说明\n信源 | 信息发起点",
+                page=2,
+                html=(
+                    "<table><tr><th>名称</th><th>说明</th></tr>"
+                    "<tr><td>信源</td><td>信息发起点</td></tr></table>"
+                ),
+            ),
+            ParsedBlock(
+                block_type="image",
+                text="",
+                page=2,
+                caption="图1-1 通信系统框图",
+            ),
+            ParsedBlock(block_type="formula", text="$$C = B\\log_2(1+SNR)$$", page=2),
+        ]
+        return ParsedDocument(pages=[], blocks=blocks)
+
+    def test_section_path_and_context(self):
+        chunks = _chunk_structured(
+            self._parsed(), chunk_size=200, chunk_overlap=20
+        )
+        assert chunks, "应有切片输出"
+        text_chunk = next(c for c in chunks if "信源、信道" in c["text"])
+        assert text_chunk["section_path"] == "第一章 绪论 / 1.1 通信系统模型"
+        assert text_chunk["chapter"] == "1.1 通信系统模型"
+        assert "§ 1.1 通信系统模型" in text_chunk["text"]
+        assert text_chunk["block_type"] == "text"
+        assert "信源、信道和信宿" in text_chunk["text"]
+
+    def test_table_standalone_with_headers(self):
+        chunks = _chunk_structured(
+            self._parsed(), chunk_size=200, chunk_overlap=20
+        )
+        table_chunk = next(c for c in chunks if c["block_type"] == "table")
+        assert table_chunk["table_headers"] == "名称 | 说明"
+        assert "信源" in table_chunk["text"]
+        assert table_chunk["page"] == 2
+        assert table_chunk["chapter"] == "1.1 通信系统模型"
+
+    def test_image_without_summary_falls_back_to_caption(self):
+        chunks = _chunk_structured(
+            self._parsed(), chunk_size=200, chunk_overlap=20
+        )
+        image_chunk = next(c for c in chunks if c["block_type"] == "image")
+        assert "图片说明：图1-1 通信系统框图" in image_chunk["text"]
+
+    def test_header_footer_excluded_from_body(self):
+        chunks = _chunk_structured(
+            self._parsed(), chunk_size=200, chunk_overlap=20
+        )
+        assert all("信号与系统" not in c["text"] for c in chunks)
 
 
 class TestScanAndChapter:
@@ -182,6 +252,24 @@ class TestVectorStoreGuard:
                 ],
                 [[0.1] * 8],
             )
+
+    def test_group_by_chapter_filters_pages_and_groups(self, vector_store, monkeypatch):
+        monkeypatch.setattr(
+            vector_store,
+            "get_by_course_id",
+            lambda course_id: [
+                {"metadata": {"chapter": "第2章 熵", "source_file": "a.md"}},
+                {"metadata": {"chapter": "第2章 熵", "source_file": "b.pdf"}},
+                {"metadata": {"chapter": "第5页", "source_file": "a.md"}},
+                {"metadata": {"chapter": "", "source_file": "a.md"}},
+                {"metadata": {"chapter": "第1章 信号", "source_file": "a.md"}},
+            ],
+        )
+        groups = vector_store.group_by_chapter(course_id=_CID)
+        assert [g["chapter"] for g in groups] == ["第1章 信号", "第2章 熵"]
+        assert groups[1]["chunk_count"] == 2
+        assert groups[1]["source_files"] == ["a.md", "b.pdf"]
+
 
     def test_delete_by_doc_id(self, vector_store):
         vector_store.upsert([_vec_chunk(42, "chunk a")], [[0.1] * 8])

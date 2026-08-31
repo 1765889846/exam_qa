@@ -55,6 +55,8 @@ async def ask_question(
                         course_id=body.course_id,
                         conversation_store=conv_store,
                         conversation_id=body.conversation_id,
+                        scenario=body.scenario,
+                        as_of=body.as_of,
                     )
                 ):
                     yield line
@@ -85,6 +87,8 @@ async def ask_question(
         course_id=body.course_id,
         conversation_store=conv_store,
         conversation_id=body.conversation_id,
+        scenario=body.scenario,
+        as_of=body.as_of,
     )
 
     return {

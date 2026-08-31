@@ -142,6 +142,30 @@ class ParsingConfig:
     pdf_ocr_language: str = field(
         default_factory=lambda: os.getenv("PDF_OCR_LANGUAGE", "eng+chi_sim")
     )
+    # PDF 解析器: mineru(MinerU 结构解析,默认) | pymupdf(现有链路) | auto(原生文本直提,扫描件自动用 MinerU)
+    pdf_parser: str = field(
+        default_factory=lambda: (os.getenv("PDF_PARSER") or "mineru").strip().lower() or "mineru"
+    )
+    mineru_cmd: str = field(
+        default_factory=lambda: (os.getenv("MINERU_CMD") or "mineru").strip() or "mineru"
+    )
+    # 秒；0 = 不限时。默认 1800s 兜底，避免异常 CLI 无限挂起
+    mineru_timeout: int = field(
+        default_factory=lambda: int(os.getenv("MINERU_TIMEOUT", "1800"))
+    )
+    # 多模态视觉理解（图表/图片摘要）：空 = 关闭；OpenAI 兼容视觉模型，如 qwen-vl-max / gpt-4o
+    visual_model: str = field(
+        default_factory=lambda: (os.getenv("VISUAL_MODEL") or "").strip()
+    )
+    visual_base_url: str = field(
+        default_factory=lambda: os.getenv("VISUAL_BASE_URL", "").strip()
+    )
+    visual_api_key: str = field(
+        default_factory=lambda: os.getenv("VISUAL_API_KEY", "").strip()
+    )
+    visual_timeout: int = field(
+        default_factory=lambda: int(os.getenv("VISUAL_TIMEOUT", "60"))
+    )
 
 
 @dataclass
@@ -184,6 +208,14 @@ class AppConfig:
             raise ValueError("chunk_size 必须大于 0")
         if self.chunk.chunk_overlap >= self.chunk.chunk_size:
             raise ValueError("chunk_overlap 必须小于 chunk_size")
+        if self.parsing.pdf_parser not in ("auto", "pymupdf", "mineru"):
+            raise ValueError(
+                f"PDF_PARSER 无效: {self.parsing.pdf_parser!r}，可选 auto / pymupdf / mineru"
+            )
+        if self.parsing.mineru_timeout < 0:
+            raise ValueError("mineru_timeout 必须 >= 0")
+        if self.parsing.visual_timeout < 0:
+            raise ValueError("visual_timeout 必须 >= 0")
         if self.max_upload_mb <= 0:
             raise ValueError("max_upload_mb 必须大于 0")
         if self.retrieval.top_k <= 0:

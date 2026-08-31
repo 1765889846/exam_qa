@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+# 单元测试不触发 MinerU 子进程（避免 CLI 挂起/慢），PDF 走 pymupdf 快速链路
+os.environ.setdefault("PDF_PARSER", "pymupdf")
+os.environ.setdefault("MINERU_TIMEOUT", "10")
 
 
 @pytest.fixture
@@ -72,3 +75,44 @@ def _clear_retrieval_caches():
     clear_query_embed_cache()
     invalidate_bm25_cache()
     yield
+
+
+# ── 测试结束后自动清理测试残留 ──────────────────────────────────
+
+_SAMPLE_FILES = (
+    "laplace-transform.txt",
+    "eigenvalues.docx",
+    "bayes-theorem.pptx",
+    "ode-first-order.pdf",
+    "determinants.doc",
+)
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _cleanup_test_artifacts() -> None:
+    """删除测试产生的残留：样本文件、占位笔记、pytest 临时目录。
+
+    只清理已知的测试产物，不触碰用户真实资料。
+    """
+    root = _project_root()
+
+    knowledge = root / "data" / "knowledge"
+    if knowledge.is_dir():
+        for name in _SAMPLE_FILES:
+            (knowledge / name).unlink(missing_ok=True)
+        for note in knowledge.glob("note_*.md"):
+            try:
+                if note.read_text(encoding="utf-8").strip() == "# hello":
+                    note.unlink(missing_ok=True)
+            except (OSError, UnicodeDecodeError):
+                continue
+
+    shutil.rmtree(root / ".pytest-tmp", ignore_errors=True)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """pytest 会话结束时自动清理测试残留（不影响真实资料）。"""
+    _cleanup_test_artifacts()

@@ -25,11 +25,14 @@
 | 章节概览 | `mode=chapter`，按 `chapter` 元数据聚合（不走语义检索） |
 | 拒答 | 最高分低于阈值 → `grounded: false`，固定文案，禁止无引用硬编 |
 | 多课隔离 | 一切检索 / 上传 / 删除都带 `course_id` |
-| 资料格式 | PDF · TXT · MD · DOC · DOCX · PPTX（扫描 PDF 可选 OCR） |
+| 资料格式 | PDF · TXT · MD · DOC · DOCX · PPTX；PDF 支持 MinerU 结构解析与 OCR 回退 |
+| PDF 自动更新 | 哈希去重 + 文件名/内容匹配；新版影子入库成功后再切换 |
+| 证据治理 | 自动抽取版本/生效期/权威候选；人工固定场景后按场景、时效、权威筛选并解释引用 |
+| 意图路由 | 三层漏斗：规则直达 → 会话状态继承 → 受约束 LLM 兜底；不会将全部请求交给模型 |
 
 ## Quick Start
 
-需要 Python ≥ 3.11、[uv](https://docs.astral.sh/uv/)，以及 OpenAI 兼容的对话 API（`LLM_API_KEY`）。扫描版 PDF 可选 [Tesseract](https://github.com/tesseract-ocr/tesseract)（`eng` / `chi_sim`）。旧版 `.doc` 需 [LibreOffice](https://www.libreoffice.org/) 或本机 Microsoft Word。
+需要 Python ≥ 3.11、[uv](https://docs.astral.sh/uv/)，以及 OpenAI 兼容的对话 API（`LLM_API_KEY`）。PDF 默认尝试 MinerU 结构解析；未安装或执行失败时会回退到 PyMuPDF 链路，因此不阻塞基本使用。扫描版 PDF 的回退 OCR 可选 [Tesseract](https://github.com/tesseract-ocr/tesseract)（`eng` / `chi_sim`）；旧版 `.doc` 需 [LibreOffice](https://www.libreoffice.org/) 或本机 Microsoft Word。
 
 ```bash
 cp .env.example .env   # 填写 LLM_API_KEY，或启动后在设置页注册模型
@@ -114,10 +117,11 @@ flowchart LR
   end
 
   subgraph ask["问答"]
-    B1["提问 + course_id + mode"] --> B2{"mode?"}
+    B1["提问 + course_id + mode<br/>可选 scenario + as_of"] --> B2{"mode?"}
     B2 -->|qa / concept| B3["向量 + BM25 → RRF"]
-    B3 --> B4["可选 BGE 精排"]
-    B4 --> B5{"score ≥ 阈值?"}
+    B3 --> B4["场景/生效期过滤 → 权威/时效择证"]
+    B4 --> B4A["可选 BGE 精排"]
+    B4A --> B5{"score ≥ 阈值?"}
     B2 -->|chapter| B6["按 chapter 元数据聚合"]
     B5 -->|是| B7["LLM + citations"]
     B5 -->|否| B8["拒答 · grounded: false"]
@@ -127,9 +131,9 @@ flowchart LR
 
 | 模块 | 职责 |
 |:-----|:-----|
-| `ingestion` / `parsing` | 解析分块入库；写入 `chapter`；PDF 可 OCR |
-| `retrieval` / `rerank` | 向量 + BM25 → RRF；可选 BGE CrossEncoder 精排 |
-| `query` / `generation` | `qa` / `concept` / `chapter` 编排与 prompt |
+| `ingestion` / `parsing` | 解析分块入库；PDF 支持 MinerU 结构还原、语义切片、可选视觉摘要与 OCR 回退 |
+| `retrieval` / `rerank` | 向量 + BM25 → RRF；按场景/生效期过滤，再按权威/时效择证；可选 BGE CrossEncoder 精排 |
+| `query` / `intent` / `generation` | 三层意图路由与 `qa` / `concept` / `chapter` 编排、prompt |
 | `eval_metrics` | 离线 Recall@K / MRR |
 | `embedding` / `llm` | 本地或 OpenAI 兼容 API |
 | `storage/` | Chroma 向量 · SQLite 元数据与目录 |
@@ -167,7 +171,8 @@ exam-rag/
 | LLM | `LLM_PROVIDER` · `LLM_API_KEY` · `LLM_BASE_URL` · `LLM_MODEL` |
 | Embedding | `EMBEDDING_PROVIDER`（`local` / `openai`）· `EMBEDDING_MODEL` |
 | 存储 | `CHROMA_PATH` · `SQLITE_PATH` · `KNOWLEDGE_DIR` · `MAX_UPLOAD_MB` |
-| PDF | `PDF_USE_OCR` · `PDF_FORCE_OCR` · `PDF_OCR_LANGUAGE` |
+| PDF | `PDF_PARSER` · `MINERU_CMD` · `MINERU_TIMEOUT` · `PDF_USE_OCR` · `PDF_FORCE_OCR` · `PDF_OCR_LANGUAGE` |
+| 视觉摘要（可选） | `VISUAL_MODEL` · `VISUAL_BASE_URL` · `VISUAL_API_KEY` · `VISUAL_TIMEOUT` |
 | 代理 | `PROXY_URL` · `PROXY_ENABLED` · `NO_PROXY` |
 
 可注册多个 LLM（OpenAI 兼容 / Ollama），「设为当前」后会写回 `.env`。
@@ -205,15 +210,28 @@ exam-rag/
 | `GET` | `/api/v1/courses` | 课程（可选 `?college_id=`） |
 | `POST` | `/api/v1/documents` | 上传（Form 必填 `course_id`） |
 | `GET` | `/api/v1/documents` | 列表（`?course_id=`） |
-| `POST` | `/api/v1/documents/scan` | 扫描 knowledge（Form：`course_id`；可选 `force=true` 强制重建） |
+| `GET` | `/api/v1/documents/summary` | 资料分类概览（`?course_id=&by=type\|chapter`，默认 `type`） |
+| `POST` | `/api/v1/documents/scan` | 扫描 knowledge（Form：`course_id`；PDF 自动识别更新；`force=true` 强制重新解析） |
+| `PATCH` | `/api/v1/documents/{doc_id}/evidence` | 人工修订版本、生效期、权威及固定场景（`?course_id=`） |
 | `DELETE` | `/api/v1/documents/{doc_id}` | 删除（`?course_id=`） |
-| `POST` | `/api/v1/ask` | 问答（`course_id`；`mode=qa\|concept\|chapter`） |
+| `POST` | `/api/v1/ask` | 问答（`course_id`；`mode=auto\|qa\|concept\|chapter`，默认 `auto`；可选 `scenario`、`as_of`） |
+| `POST` | `/api/v1/agent/run` | Agent 多步问答（`course_id`；`mode=qa\|concept`；`max_steps` 上限 10） |
 
 默认课：`course-default`。同一物理文件不会跨课改归属。
 
 **章节概览（`mode=chapter`）**：依赖入库时写入的 `chapter` 元数据。旧库请到资料页勾选「强制重建」再扫描，或重新上传；普通扫描仅在文件 mtime 变更时重入库。
 
 **BGE 精排**：设置页打开「启用 BGE 精排」后，对混合召回结果做 CrossEncoder 重排；默认关闭（避免首启强制下载模型）。
+
+**PDF 自动更新**：上传 PDF 或扫描资料目录时，系统先计算 SHA-256 去重；再以规范化文件名和已入库文本相似度匹配同一课程的旧版。新版以不可检索状态完成解析/向量化后才切换；失败时旧版继续可用。文件名相似但内容差异过大的 PDF 会作为新资料入库。
+
+**证据元数据与择证**：入库会从正文抽取版本号、生效/失效日期及权威层级候选，记录抽取置信度。自然语言「适用范围」不会直接用于过滤，须通过 `PATCH /documents/{doc_id}/evidence?course_id=...` 设为稳定的场景键（如 `考试`、`实验`）。问答传入 `scenario` 和 `as_of`（`YYYY-MM-DD`）后，仅保留该场景或 `all`、且当日有效的证据；其后优先更高权威，再优先较新的生效版本。每条 citation 返回版本、时效、权威、场景和选择原因。
+
+**意图识别**：`mode` 未指定时为 `auto`。规则层毫秒级识别章节、概念、版本/时效和受控场景；指代性追问（如“按刚才那个范围”）从会话中继承上一轮已保存的结构化意图；仅在无可继承状态的模糊指代下调用 LLM，并强制其只返回经过枚举和日期校验的 JSON 计划。实际检索、范围过滤和证据选择始终由后端确定性执行。响应 `data.intent` 可用于观测路由层、置信度与最终检索范围。
+
+**Agent 多步问答（`/agent/run`）**：LangGraph 编排 `retrieve → grade → rewrite/generate → refuse` 循环，检索不达标时自动改写查询重试（`max_steps` 默认 3、上限 10）。`langgraph` 已纳入项目依赖，`uv sync` 即会安装。
+
+**P2-C（工具底座已完成，决策环未接通）**：已有 `search_pdf` / `read_page` / `extract_table` / `analyze_chart` / `quote_source` 五个只读工具、OpenAI function schema、白名单分发与单测。当前 `/agent/run` 仍走 P2-B 固定状态图；LLM 自主选择工具的决策环尚未实现。详见 `docs/04-后续演进规范.md` §4.4.8。
 
 <details>
 <summary>问答示例</summary>
@@ -225,6 +243,17 @@ POST /api/v1/ask
   "course_id": "course-default",
   "mode": "qa",
   "stream": false
+}
+```
+
+带固定场景与“截至日期”的问答：
+
+```json
+{
+  "question": "本次考试可以携带计算器吗？",
+  "course_id": "course-default",
+  "scenario": "考试",
+  "as_of": "2026-09-01"
 }
 ```
 
@@ -277,7 +306,11 @@ POST /api/v1/ask
 | P1-A 学院·课程隔离 | 已实现 |
 | P1-B `mode=concept` · 混合检索 · PPT | 已实现 |
 | P2-A 离线评估 · BGE 精排 · `mode=chapter` | 已实现（精排默认关） |
-| P2-B Agent / P3 平台化 | 未做 |
+| PDF 结构化解析 · 语义切片 · 可选视觉摘要 | 已实现（MinerU 不可用时自动回退） |
+| PDF 内容指纹 · 影子入库 · 自动版本切换 | 已实现 |
+| P2-B Agent（LangGraph 多步循环） | 已实现 |
+| P2-C LLM 自主决策 · 工具调用（function calling） | 工具底座已完成；决策环未实现 |
+| P3 平台化 | 未做 |
 
 ## Development
 

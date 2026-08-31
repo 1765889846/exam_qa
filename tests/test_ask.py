@@ -105,6 +105,21 @@ class TestAskStream:
 
 
 class TestAskModes:
+    def test_auto_mode_routes_chapter_intent(self):
+        vs = MagicMock()
+        vs.get_by_chapter.return_value = []
+        out = ask(
+            "请概述第3章",
+            mode="auto",
+            vs=vs,
+            llm=MagicMock(configured=True),
+            course_id=DEFAULT_COURSE_ID,
+        )
+        assert out.intent is not None
+        assert out.intent.mode == "chapter"
+        assert out.intent.layer == "rule"
+        vs.get_by_chapter.assert_called_once_with(DEFAULT_COURSE_ID, "请概述第3章")
+
     def test_concept_prompt_structure(self):
         msgs = generation._build_messages(
             [

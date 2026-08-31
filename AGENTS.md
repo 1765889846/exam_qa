@@ -24,7 +24,7 @@ uv run pytest -q -m integration   # 集成测试（需 Embedding + LLM）
 ```
 
 - 修改 `www/` 静态文件后刷新即可，无构建步骤。
-- 环境要求：扫描版 PDF 的 OCR 可选 Tesseract；旧版 `.doc` 转换需 LibreOffice 或本机 Word。
+- 环境要求：PDF 默认尝试外部 MinerU，不可用时回退 PyMuPDF 链路；扫描版 PDF 的回退 OCR 可选 Tesseract；旧版 `.doc` 转换需 LibreOffice 或本机 Word。
 
 ## 工程规范
 
@@ -38,8 +38,12 @@ uv run pytest -q -m integration   # 集成测试（需 Embedding + LLM）
 ## 产品边界（不做的事）
 
 - 必须实现**拒答**：检索最高分低于阈值时返回 `grounded: false`，固定文案「资料库中未找到相关内容」，禁止无引用硬编。
-- 不做：用户管理/登录、多人协作、资料版本管理、在线编辑器、Agent/MCP/Skills 框架、跨会话长期记忆。
-- P0 的 `services/` 主链路（ingestion → retrieval → generation）不被 Agent 或多学科重写，只做扩展。
+- 不做：用户管理/登录、多人协作、在线编辑器、MCP/Skills 框架、跨会话长期记忆。
+- PDF 支持自动版本更新：为同课程的新文件计算内容哈希、标识疑似版本，新版解析/入库成功后才替换旧版；旧版保留历史元数据。
+- 证据元数据：入库自动提取版本、生效期和权威候选；固定适用范围必须使用人工维护的 `applicability_scope` 场景键。查询传 `scenario` / `as_of` 时先过滤范围与时效，再按权威层级、生效时间择证，并在 citation 解释选择依据。
+- 意图路由采用三层漏斗：规则层优先；指代追问继承 `ConversationStore` 的已确认意图；仅无状态的复杂模糊请求允许受约束 LLM 返回 JSON 计划。LLM 不得直接绕过检索、权限、场景和时效校验。
+- Agent（LangGraph 多步循环）已落地为 P2-B：`src/services/agent/` + `POST /agent/run`，仅薄封装 `retrieve` / `generate`，不重写 P0 主链路（ingestion → retrieval → generation）。
+- P2-C 已落地只读工具、function schema、白名单分发与单测，但 LLM 自主决策环尚未接入 `/agent/run`；仍不引入 MCP / Skills，工具仅薄封装 service，不重写 P0 主链路。
 
 ## 测试约定
 

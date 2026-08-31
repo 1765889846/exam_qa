@@ -2,7 +2,7 @@
 name = "exam-rag"
 version = "0.1.0"
 description = "溯知（exam-rag）— 据源而答的课程资料问答"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
@@ -16,6 +16,8 @@ dependencies = [
     "python-multipart>=0.0.9",
     "python-dotenv>=1.2.2",
     "jieba>=0.42",
+    "langgraph>=1.2.11",
+    "torch>=2.13.0",
 ]
 
 [project.scripts]
@@ -27,6 +29,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
+
 
 [dependency-groups]
 dev = [

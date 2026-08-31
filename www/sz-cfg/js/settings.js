@@ -83,6 +83,16 @@ const GROUPS = [
       { key: "pdf_use_ocr", label: "启用 OCR", type: "checkbox" },
       { key: "pdf_force_ocr", label: "强制 OCR", type: "checkbox" },
       { key: "pdf_ocr_language", label: "OCR 语言" },
+      {
+        key: "pdf_parser",
+        label: "PDF 解析器",
+        type: "select",
+        options: ["auto", "pymupdf", "mineru"],
+      },
+      { key: "mineru_cmd", label: "MinerU 命令" },
+      { key: "mineru_timeout", label: "MinerU 超时秒 (0=不限)", type: "number" },
+      { key: "visual_model", label: "视觉模型 (空=关闭图片摘要)" },
+      { key: "visual_timeout", label: "视觉摘要超时秒", type: "number" },
     ],
   },
   {

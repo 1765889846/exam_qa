@@ -2,7 +2,7 @@
 
 表结构：
   conversations: id, course_id, title, created_at, updated_at
-  messages: id, conversation_id, role, content, citations, grounded, mode, created_at
+  messages: id, conversation_id, role, content, citations, intent, grounded, mode, created_at
 """
 
 from __future__ import annotations
@@ -56,6 +56,7 @@ class ConversationStore:
                     role TEXT NOT NULL CHECK(role IN ('user','assistant')),
                     content TEXT NOT NULL,
                     citations TEXT NOT NULL DEFAULT '[]',
+                    intent TEXT NOT NULL DEFAULT '{}',
                     grounded INTEGER NOT NULL DEFAULT 1,
                     mode TEXT NOT NULL DEFAULT 'qa',
                     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
@@ -64,6 +65,9 @@ class ConversationStore:
                 CREATE INDEX IF NOT EXISTS idx_messages_conv
                     ON messages(conversation_id, created_at);
             """)
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+            if "intent" not in cols:
+                conn.execute("ALTER TABLE messages ADD COLUMN intent TEXT NOT NULL DEFAULT '{}'")
 
     # ── conversations ──────────────────────────────────────────────
 
@@ -115,6 +119,7 @@ class ConversationStore:
         role: str,
         content: str,
         citations: list | None = None,
+        intent: dict | None = None,
         grounded: bool = True,
         mode: str = "qa",
     ) -> dict:
@@ -123,9 +128,9 @@ class ConversationStore:
         now = _now()
         with self._conn() as conn:
             conn.execute(
-                """INSERT INTO messages(id,conversation_id,role,content,citations,grounded,mode,created_at)
-                   VALUES(?,?,?,?,?,?,?,?)""",
-                (mid, conversation_id, role, content, cit, int(grounded), mode, now),
+            """INSERT INTO messages(id,conversation_id,role,content,citations,intent,grounded,mode,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (mid, conversation_id, role, content, cit, json.dumps(intent or {}, ensure_ascii=False), int(grounded), mode, now),
             )
             conn.execute(
                 "UPDATE conversations SET updated_at=? WHERE id=?",
@@ -144,6 +149,22 @@ class ConversationStore:
                 (conversation_id, max_messages, conversation_id),
             ).fetchall()
         return [{"role": r["role"], "content": r["content"]} for r in rows]
+
+    def get_latest_user_intent(self, conversation_id: str) -> dict | None:
+        """读取最近一轮用户确认的路由状态，供指代性追问继承。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT intent FROM messages WHERE conversation_id=? AND role='user' "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                (conversation_id,),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            data = json.loads(row["intent"] or "{}")
+        except json.JSONDecodeError:
+            return None
+        return data if isinstance(data, dict) and data else None
     def count_messages(self, conversation_id: str) -> int:
         with self._conn() as conn:
             row = conn.execute(

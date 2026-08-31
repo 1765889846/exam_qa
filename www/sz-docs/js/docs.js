@@ -6,6 +6,21 @@ const PROCESS_STEPS = ["解析中…", "分块中…", "向量化中…", "写�
 
 let uploadProgress = null;
 
+function updateMessage(payload, fallback) {
+  const updates = payload?.updates || (payload?.update ? [payload.update] : []);
+  if (!updates.length) return fallback;
+  const counts = updates.reduce((all, item) => {
+    all[item.action] = (all[item.action] || 0) + 1;
+    return all;
+  }, {});
+  const parts = [];
+  if (counts.updated) parts.push(`更新 ${counts.updated} 份`);
+  if (counts.created) parts.push(`新增 ${counts.created} 份`);
+  if (counts.unchanged) parts.push(`跳过 ${counts.unchanged} 份未变化资料`);
+  if (counts.failed) parts.push(`失败 ${counts.failed} 份`);
+  return parts.length ? parts.join("；") : fallback;
+}
+
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, "&amp;")
@@ -246,6 +261,93 @@ async function refreshDocs() {
   }
 }
 
+function renderClassification(data) {
+  const box = document.getElementById("sz-classify-result");
+  if (!box) return;
+  const groups = data?.groups || [];
+  const dimension = data?.dimension || "type";
+  if (!groups.length) {
+    box.innerHTML = `<p class="sz-docs-empty">暂无资料可分类</p>`;
+    return;
+  }
+
+  const heading =
+    dimension === "chapter"
+      ? `${escapeHtml(String(data.total_chunks ?? 0))} 块 · ${groups.length} 个章节`
+      : `${groups.length} 类 · ${data.total ?? 0} 份资料`;
+
+  box.innerHTML = `
+    <p class="sz-classify-summary">${heading}</p>
+    <div class="sz-classify-groups">
+      ${groups
+        .map((g) => {
+          if (dimension === "chapter") {
+            const files = (g.source_files || [])
+              .map((f) => `<li>${escapeHtml(f)}</li>`)
+              .join("");
+            return `<article class="sz-classify-group">
+              <div class="sz-classify-group-head">
+                <span class="sz-classify-name">${escapeHtml(g.chapter || "未分类")}</span>
+                <span class="sz-classify-count">${Number(g.chunk_count) || 0} 块</span>
+              </div>
+              <ul class="sz-classify-files">${files || "<li>暂无来源文件</li>"}</ul>
+            </article>`;
+          }
+          const docs = g.documents || [];
+          const items = docs
+            .map(
+              (d) =>
+                `<li>${escapeHtml(d.filename || String(d.id))}${
+                  d.chunk_count != null
+                    ? `<span class="sz-classify-count">${Number(d.chunk_count) || 0} 块</span>`
+                    : ""
+                }</li>`,
+            )
+            .join("");
+          return `<article class="sz-classify-group">
+            <div class="sz-classify-group-head">
+              <span class="sz-classify-name">${escapeHtml(g.label || g.type || "其他")}</span>
+              <span class="sz-classify-count">${docs.length} 份</span>
+            </div>
+            <ul class="sz-classify-files">${items || "<li>暂无资料</li>"}</ul>
+          </article>`;
+        })
+        .join("")}
+    </div>`;
+}
+
+async function refreshClassification() {
+  const box = document.getElementById("sz-classify-result");
+  if (!box) return;
+  const courseId = getCourseId();
+  if (!courseId) {
+    box.innerHTML = `<p class="sz-docs-empty">请先选择课程</p>`;
+    return;
+  }
+  const select = document.getElementById("sz-classify-by");
+  const by = select?.value || "type";
+  try {
+    const data = await apiGet("/documents/summary", {
+      course_id: courseId,
+      by,
+    });
+    renderClassification(data);
+  } catch (err) {
+    box.innerHTML = `<p class="sz-docs-empty">${escapeHtml(err.message || "加载分类失败")}</p>`;
+    toast(err.message || "加载分类失败", "error");
+  }
+}
+
+function setupClassification() {
+  const select = document.getElementById("sz-classify-by");
+  if (select) select.addEventListener("change", () => refreshClassification());
+}
+
+async function refreshDocsAndClassification() {
+  await refreshDocs();
+  await refreshClassification();
+}
+
 function setupUploadZone() {
   const zone = document.getElementById("sz-upload-zone");
   if (!zone) return;
@@ -287,7 +389,7 @@ function setupUploadZone() {
     setBusy(zone, true);
     showProgress(zone, { phase: "upload", ratio: 0, filename: file.name });
     try {
-      await apiUploadWithProgress("/documents", fd, (ev) => {
+      const result = await apiUploadWithProgress("/documents", fd, (ev) => {
         if (ev.phase === "upload") {
           showProgress(zone, {
             phase: "upload",
@@ -298,8 +400,8 @@ function setupUploadZone() {
           showProgress(zone, { phase: "processing" });
         }
       });
-      toast("上传成功", "success");
-      await refreshDocs();
+      toast(updateMessage(result, "上传成功"), "success");
+      await refreshDocsAndClassification();
     } catch (err) {
       toast(err.message || "上传失败", "error");
     } finally {
@@ -332,7 +434,7 @@ function setupUploadZone() {
       label: force ? "强制重建中…" : "扫描目录中…",
     });
     try {
-      await apiUploadWithProgress("/documents/scan", fd, (ev) => {
+      const result = await apiUploadWithProgress("/documents/scan", fd, (ev) => {
         if (ev.phase === "processing") {
           showProgress(zone, {
             phase: "processing",
@@ -340,8 +442,8 @@ function setupUploadZone() {
           });
         }
       });
-      toast(force ? "强制重建完成" : "扫描完成", "success");
-      await refreshDocs();
+      toast(updateMessage(result, force ? "强制重建完成" : "扫描完成"), "success");
+      await refreshDocsAndClassification();
     } catch (err) {
       toast(err.message || "扫描失败", "error");
     } finally {
@@ -371,15 +473,15 @@ function setupDocList() {
       const courseId = getCourseId();
       if (!courseId) {
         toast("请先选择课程", "error");
-        await refreshDocs();
+        await refreshDocsAndClassification();
         return;
       }
       await apiDelete(`/documents/${id}`, { course_id: courseId });
       toast("已删除", "success");
-      await refreshDocs();
+      await refreshDocsAndClassification();
     } catch (err) {
       toast(err.message || "删除失败", "error");
-      await refreshDocs();
+      await refreshDocsAndClassification();
     }
   });
 }
@@ -394,11 +496,11 @@ function bindCourseChange() {
 
   collegeSel.onchange = async (ev) => {
     if (shellCollege) await shellCollege.call(collegeSel, ev);
-    await refreshDocs();
+    await refreshDocsAndClassification();
   };
   courseSel.onchange = (ev) => {
     if (shellCourse) shellCourse.call(courseSel, ev);
-    refreshDocs();
+    refreshDocsAndClassification();
   };
 }
 
@@ -407,9 +509,10 @@ async function main() {
   setupUploadZone();
   setupDocList();
   bindCourseChange();
+  setupClassification();
   loadHitokotoQuotes();
   await refreshConfigEmbedding();
-  await refreshDocs();
+  await refreshDocsAndClassification();
 }
 
 const HITOKOTO_URLS = [

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import os
 import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.config import config
@@ -19,6 +21,23 @@ logger = logging.getLogger(__name__)
 SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md", ".doc", ".docx", ".pptx"}
 
 
+def _run_capture(args: list[str], *, timeout: float | None = None, encoding: str = "utf-8"):
+    """subprocess.run 的 Windows 安全版：stdout/stderr 写临时文件而非管道。
+
+    子进程若再派生子进程（COM dllhost / MinerU 子进程）会继承管道句柄，
+    导致 communicate() 在超时后仍永久阻塞；临时文件无句柄继承问题。
+    """
+    import tempfile as _tf
+
+    with _tf.TemporaryFile() as _out, _tf.TemporaryFile() as _err:
+        proc = subprocess.run(args, stdout=_out, stderr=_err, timeout=timeout)
+        _out.seek(0)
+        _err.seek(0)
+        stdout = _out.read().decode(encoding, errors="replace")
+        stderr = _err.read().decode(encoding, errors="replace")
+    return proc, stdout, stderr
+
+
 @dataclass
 class ParsedPage:
     page: int | None  # PDF/PPT 1-based；纯文本/docx 为 None
@@ -26,12 +45,33 @@ class ParsedPage:
 
 
 @dataclass
+class ParsedBlock:
+    """MinerU 结构化 block：结构还原的最小单元。"""
+
+    block_type: str  # text|title|table|formula|formula_inline|image|image_caption|table_caption|figure_caption|header|footer|...
+    text: str  # 可检索文本（表格/公式/图片摘要已转文本）
+    page: int | None  # 1-based
+    level: int = 0  # 标题层级 1-6；非标题为 0
+    html: str = ""  # 表格原始 HTML
+    latex: str = ""  # 公式 LaTeX
+    image_path: str = ""  # 图片原始文件路径（多模态摘要用）
+    caption: str = ""  # 图片/表格说明
+    order: int = 0  # 原始顺序（跨页排序用）
+    bbox: tuple | None = None
+
+
+@dataclass
 class ParsedDocument:
     pages: list[ParsedPage]
+    blocks: list[ParsedBlock] = field(default_factory=list)
 
     @property
     def full_text(self) -> str:
         return "\n\n".join(p.text for p in self.pages if p.text.strip())
+
+    @property
+    def has_blocks(self) -> bool:
+        return bool(self.blocks)
 
 
 def _page_num(meta: dict) -> int | None:
@@ -89,8 +129,458 @@ def _parse_pdf_fitz(path: str) -> ParsedDocument:
         doc.close()
 
 
+def _mineru_available(cmd: str) -> bool:
+    """MinerU CLI 是否可用（PATH 可找到）。"""
+    return bool(shutil.which(cmd))
+
+
+def _pdf_kind(path: str) -> str:
+    """抽样判断 PDF 类型：text（原生文本）| scanned（扫描件/图片型）| mixed。
+
+    原生文本 PDF 直接提取文本；扫描件/混合型交给 OCR / MinerU。
+    采样首页、次页、中间页、末页，避免只按首字符数误判。
+    """
+    try:
+        import fitz
+
+        doc = fitz.open(path)
+        try:
+            n = doc.page_count
+            if n == 0:
+                return "scanned"
+            total = 0
+            sampled = 0
+            for i in sorted({0, 1, n // 2, n - 1}):
+                if i >= n:
+                    continue
+                total += len(re.sub(r"\s", "", doc[i].get_text() or ""))
+                sampled += 1
+            if sampled == 0 or total < 30:
+                return "scanned"
+            avg = total / sampled
+            if avg < 30:
+                return "scanned"
+            return "mixed" if avg < 200 else "text"
+        finally:
+            doc.close()
+    except Exception:
+        return "scanned"
+
+
+def _html_table_to_text(html: str) -> str:
+    """把 MinerU 的表格 HTML 转成可检索的纯文本（单元格用 | 分隔）。"""
+    if not html:
+        return ""
+    text = re.sub(r"<t[dh][^>]*>", " | ", html, flags=re.I)
+    text = re.sub(r"</t[r]>", "\n", text, flags=re.I)
+    text = re.sub(r"</t[dh]>", "", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"&nbsp;?", " ", text, flags=re.I)
+    lines = [re.sub(r"\s*[|]\s*$", "", ln).strip() for ln in text.splitlines()]
+    return "\n".join(ln for ln in lines if ln.strip())
+
+
+def _table_headers(html: str) -> str:
+    """从表格 HTML 提取列头（<th>），写入结构化 metadata。"""
+    if not html:
+        return ""
+    heads = re.findall(r"<t[h][^>]*>(.*?)</t[h]>", html, flags=re.I | re.S)
+    cleaned = [" ".join(re.sub(r"<[^>]+>", " ", h).split()) for h in heads]
+    return " | ".join(c for c in cleaned if c)
+
+
+def _block_text(block: dict) -> str:
+    """content_list 单个 block 的可检索文本（text/table/formula 按类型拼接）。"""
+    btype = block.get("type") or ""
+    if btype in ("formula", "formula_inline"):
+        latex = block.get("latex") or ""
+        return f"$${latex}$$" if latex else ""
+    if btype == "table":
+        text = block.get("text") or ""
+        html = block.get("html") or ""
+        return text if text else _html_table_to_text(html)
+    text = block.get("text") or ""
+    if text:
+        return text
+    parts = []
+    for ln in block.get("lines") or []:
+        if isinstance(ln, dict):
+            t = ln.get("text") or ln.get("content") or ""
+        else:
+            t = str(ln)
+        if t.strip():
+            parts.append(t.strip())
+    return "\n".join(parts)
+
+
+_CAPTION_TYPES = frozenset({"image_caption", "table_caption", "figure_caption"})
+
+
+def _caption_text(block: dict) -> str:
+    """图片/表格说明文本（兼容 text 与 lines 两种形态）。"""
+    text = (block.get("text") or "").strip()
+    if text:
+        return text
+    parts = []
+    for ln in block.get("lines") or []:
+        if isinstance(ln, dict):
+            t = ln.get("text") or ln.get("content") or ""
+        else:
+            t = str(ln)
+        if t.strip():
+            parts.append(t.strip())
+    return " ".join(parts)
+
+
+def _as_bbox(raw) -> tuple | None:
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        return None
+    try:
+        return tuple(float(v) for v in raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_image_path(img_path: str | None, base_dir: Path | None) -> str:
+    """MinerU 图片路径可能是相对 json 输出目录的，解析为绝对路径。"""
+    if not img_path:
+        return ""
+    p = Path(img_path)
+    if not p.is_absolute() and base_dir is not None:
+        p = base_dir / p
+    return str(p.resolve()) if p.exists() else ""
+
+
+def _blocks_to_pages(blocks: list[ParsedBlock]) -> list[ParsedPage]:
+    """按页聚合 block 文本，保证 pages 视图与 blocks 一致。"""
+    by_page: dict[int, list[str]] = {}
+    for b in blocks:
+        if not b.text:
+            continue
+        by_page.setdefault(b.page or 0, []).append(b.text)
+    pages = []
+    for k in sorted(by_page):
+        pages.append(
+            ParsedPage(page=None if k == 0 else k, text="\n\n".join(by_page[k]))
+        )
+    return pages
+
+
+def _mineru_json_to_document(content: dict, *, base_dir: Path | None = None) -> ParsedDocument:
+    """重组 MinerU content_list 为带 block 结构的 ParsedDocument（结构还原）。
+
+    - 保留 title 层级、table HTML、formula、image 原图路径与说明；
+    - 图片/表格说明（caption）就近挂载，无归属的保留为独立 caption block；
+    - 页眉页脚保留在 blocks 中（结构还原），正文切片阶段再决定取舍。
+    """
+    items = content.get("content_list") or []
+    raw: list[dict] = []
+    for i, block in enumerate(items):
+        if isinstance(block, dict):
+            item = dict(block)
+            item.setdefault("_seq", i)
+            raw.append(item)
+
+    # caption 挂载：优先挂到它前面的 image/table（MinerU 输出图在前、说明在后），
+    # 无前驱时再找后面的，距离超过 3 个 block 视为无归属。
+    targets = [
+        (int(b.get("_seq", 0)), b.get("type"))
+        for b in raw
+        if b.get("type") in ("image", "table")
+    ]
+    caption_by_target: dict[int, str] = {}
+    orphan_captions: list[tuple[int, int | None, str]] = []
+    for block in raw:
+        if block.get("type") not in _CAPTION_TYPES:
+            continue
+        text = _caption_text(block)
+        if not text:
+            continue
+        seq = int(block.get("_seq", 0))
+        candidates = [t for t in targets if t[0] < seq] or targets
+        best_t, best_d = -1, 10**9
+        for tseq, _ttype in candidates:
+            d = abs(tseq - seq)
+            if d < best_d:
+                best_t, best_d = tseq, d
+        if best_t >= 0 and best_d <= 3:
+            caption_by_target[best_t] = text
+        else:
+            try:
+                page = int(block.get("page_idx", 0)) + 1
+            except (TypeError, ValueError):
+                page = None
+            orphan_captions.append((seq, page, text))
+
+    blocks: list[ParsedBlock] = []
+    for block in raw:
+        try:
+            page = int(block.get("page_idx", 0)) + 1
+        except (TypeError, ValueError):
+            page = None
+        btype = str(block.get("type") or "text")
+        seq = int(block.get("_seq", 0))
+        order = block.get("order") if block.get("order") is not None else seq
+
+        if btype in _CAPTION_TYPES:
+            continue  # 已挂载或进入 orphan_captions
+        if btype == "table":
+            html = block.get("html") or ""
+            text = (block.get("text") or "").strip() or _html_table_to_text(html)
+            blocks.append(
+                ParsedBlock(
+                    block_type="table",
+                    text=text,
+                    page=page,
+                    html=html,
+                    caption=caption_by_target.get(seq, ""),
+                    order=order,
+                    bbox=_as_bbox(block.get("bbox")),
+                )
+            )
+        elif btype == "image":
+            blocks.append(
+                ParsedBlock(
+                    block_type="image",
+                    text=(block.get("text") or "").strip(),
+                    page=page,
+                    image_path=_resolve_image_path(block.get("img_path"), base_dir),
+                    caption=caption_by_target.get(seq, ""),
+                    order=order,
+                    bbox=_as_bbox(block.get("bbox")),
+                )
+            )
+        elif btype in ("formula", "formula_inline"):
+            latex = block.get("latex") or ""
+            blocks.append(
+                ParsedBlock(
+                    block_type=btype,
+                    text=f"$${latex}$$" if latex else "",
+                    page=page,
+                    latex=latex,
+                    order=order,
+                    bbox=_as_bbox(block.get("bbox")),
+                )
+            )
+        elif btype == "title":
+            try:
+                level = int(block.get("level") or 1)
+            except (TypeError, ValueError):
+                level = 1
+            blocks.append(
+                ParsedBlock(
+                    block_type="title",
+                    text=(block.get("text") or "").strip(),
+                    page=page,
+                    level=level,
+                    order=order,
+                    bbox=_as_bbox(block.get("bbox")),
+                )
+            )
+        else:
+            blocks.append(
+                ParsedBlock(
+                    block_type=btype,
+                    text=_block_text(block).strip(),
+                    page=page,
+                    order=order,
+                    bbox=_as_bbox(block.get("bbox")),
+                )
+            )
+
+    for seq, page, text in orphan_captions:
+        blocks.append(ParsedBlock(block_type="caption", text=text, page=page, order=seq))
+
+    blocks.sort(key=lambda b: (b.page or 0, b.order))
+    return ParsedDocument(pages=_blocks_to_pages(blocks), blocks=blocks)
+
+
+def _mineru_json_to_pages(content: dict) -> ParsedDocument:
+    """兼容入口：仅按页重组文本（无结构信息）。"""
+    return _mineru_json_to_document(content)
+
+
+def _mineru_md_to_pages(md_text: str) -> ParsedDocument:
+    """无 JSON 时的回退：Markdown 整体作为一页。"""
+    text = md_text.strip()
+    return ParsedDocument([ParsedPage(page=None, text=text)] if text else [])
+
+
+def _image_mime(path: Path) -> str:
+    return {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".bmp": "image/bmp",
+    }.get(path.suffix.lower(), "")
+
+
+def _summarize_image(image_path: str, caption: str, page: int | None) -> str | None:
+    """用配置的视觉模型生成图片/图表摘要（多模态视觉理解）。
+
+    未配置 VISUAL_MODEL / 图片缺失 / 调用失败时返回 None，由调用方回退占位，
+    不阻断入库主链路。
+    """
+    p = config.parsing
+    if not p.visual_model or not image_path:
+        return None
+    path = Path(image_path)
+    if not path.exists():
+        logger.warning("图片不存在，跳过视觉摘要: %s", image_path)
+        return None
+    mime = _image_mime(path)
+    if not mime:
+        logger.warning("不支持的图片格式，跳过视觉摘要: %s", path.name)
+        return None
+    base_url = p.visual_base_url or config.llm.base_url or "https://api.openai.com/v1"
+    api_key = p.visual_api_key or config.llm.api_key
+    if not api_key:
+        logger.warning("VISUAL_MODEL 已配置但无 VISUAL_API_KEY / LLM_API_KEY，跳过视觉摘要")
+        return None
+    try:
+        data_url = (
+            f"data:{mime};base64,"
+            f"{base64.b64encode(path.read_bytes()).decode('ascii')}"
+        )
+    except OSError as e:
+        logger.warning("读取图片失败，跳过视觉摘要: %s", e)
+        return None
+
+    prompt = (
+        "请用中文描述这张教学资料图片/图表的核心内容与关键信息，"
+        "2-3 句话，适合作为检索摘要，不要输出多余内容。"
+    )
+    if caption:
+        prompt += f"\n图片说明（可能含编号）：{caption}"
+    try:
+        from openai import OpenAI
+
+        from src.services.http_client import create_openai_http_client
+
+        client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=p.visual_timeout,
+            max_retries=1,
+            http_client=create_openai_http_client(p.visual_timeout),
+        )
+        resp = client.chat.completions.create(
+            model=p.visual_model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+            temperature=0.2,
+            max_tokens=200,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        if text:
+            logger.info(
+                "视觉摘要完成: %s (第%s页)", Path(image_path).name, page or "?"
+            )
+            return text
+    except Exception as e:
+        logger.warning("视觉摘要失败，图片按占位文本处理: %s", e)
+    return None
+
+
+def _parse_pdf_mineru(
+    path: str,
+    *,
+    cmd: str = "mineru",
+    timeout: int = 0,
+) -> ParsedDocument | None:
+    """子进程调用 MinerU CLI，读取输出 Markdown/JSON 重组为 ParsedDocument。
+
+    timeout<=0 表示不限时；任何失败返回 None，由调用方回退现有链路。
+    """
+    if not _mineru_available(cmd):
+        return None
+    tmp = Path(tempfile.mkdtemp(prefix="mineru_"))
+    try:
+        logger.info(
+            "MinerU 解析开始: %s (timeout=%s)", Path(path).name, timeout or "无"
+        )
+        proc = subprocess.run(
+            [cmd, "-p", str(path), "-o", str(tmp)],
+            capture_output=True,
+            text=True,
+            timeout=None if timeout <= 0 else timeout,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if proc.returncode != 0:
+            logger.warning(
+                "MinerU 退出码 %s: %s",
+                proc.returncode,
+                (proc.stderr or proc.stdout).strip()[:300],
+            )
+            return None
+
+        md_files = sorted(tmp.rglob("*.md"))
+        json_files = sorted(tmp.rglob("*.json"))
+        md_doc = None
+        if md_files:
+            md_doc = _mineru_md_to_pages(
+                md_files[0].read_text(encoding="utf-8", errors="replace")
+            )
+        for jf in json_files:
+            try:
+                content = json.loads(jf.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                continue
+            if isinstance(content, dict) and isinstance(content.get("content_list"), list):
+                doc = _mineru_json_to_document(content, base_dir=jf.parent)
+                if doc.pages:
+                    logger.info(
+                        "MinerU 解析完成: %s, %d 页 / %d 块 (json)",
+                        Path(path).name,
+                        len(doc.pages),
+                        len(doc.blocks),
+                    )
+                    return doc
+        if md_doc and md_doc.pages:
+            logger.info("MinerU 解析完成: %s, 回退 Markdown", Path(path).name)
+            return md_doc
+        logger.warning("MinerU 未产出可用文本: %s", Path(path).name)
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning("MinerU 解析超时（%s 秒）: %s", timeout, Path(path).name)
+        return None
+    except Exception as e:
+        logger.warning("MinerU 解析异常: %s", e)
+        return None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _parse_pdf(path: str) -> ParsedDocument:
     p = config.parsing
+    pdf_kind = _pdf_kind(path)
+    logger.info("PDF 类型判断: %s -> %s", Path(path).name, pdf_kind)
+
+    if p.pdf_parser in ("mineru", "auto"):
+        want_mineru = p.pdf_parser == "mineru" or pdf_kind in ("scanned", "mixed")
+        if want_mineru:
+            if _mineru_available(p.mineru_cmd):
+                doc = _parse_pdf_mineru(
+                    path, cmd=p.mineru_cmd, timeout=p.mineru_timeout
+                )
+                if doc and doc.full_text.strip():
+                    return doc
+            elif p.pdf_parser == "mineru":
+                logger.warning(
+                    "PDF_PARSER=mineru 但找不到命令 %s，回退现有链路", p.mineru_cmd
+                )
+
+    # 原生文本 PDF：直接提取
     try:
         doc = _parse_pdf_pymupdf4llm(path)
         if doc and doc.full_text.strip():
@@ -241,12 +731,15 @@ def _convert_doc_to_docx_soffice(path: str) -> Path | None:
     out_dir = Path(tempfile.mkdtemp(prefix="exam_doc_"))
     dest: Path | None = None
     try:
-        subprocess.run(
+        proc, _stdout, stderr = _run_capture(
             [soffice, "--headless", "--convert-to", "docx", "--outdir", str(out_dir), path],
-            check=True,
-            capture_output=True,
             timeout=120,
         )
+        if proc.returncode != 0:
+            logger.warning(
+                "LibreOffice 退出码 %s: %s", proc.returncode, stderr.strip()[:300]
+            )
+            return None
         converted = out_dir / f"{Path(path).stem}.docx"
         if not converted.is_file():
             return None
@@ -285,13 +778,15 @@ def _convert_doc_to_docx_word(path: str) -> Path | None:
         "[System.Runtime.InteropServices.Marshal]::ReleaseComObject($word)|Out-Null"
     )
     try:
-        subprocess.run(
+        proc, _stdout, stderr = _run_capture(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
-            check=True,
-            capture_output=True,
-            text=True,
             timeout=120,
         )
+        if proc.returncode != 0:
+            logger.warning(
+                "Word COM 退出码 %s: %s", proc.returncode, stderr.strip()[:300]
+            )
+            return None
         if dest.is_file() and dest.stat().st_size > 0:
             return dest
         dest.unlink(missing_ok=True)
@@ -352,7 +847,7 @@ def _convert_pptx_to_pdf_soffice(path: str) -> Path | None:
     dest: Path | None = None
     try:
         user_install = "file:///" + str(profile_dir).replace("\\", "/")
-        subprocess.run(
+        proc, _stdout, stderr = _run_capture(
             [
                 soffice,
                 "--headless",
@@ -365,10 +860,13 @@ def _convert_pptx_to_pdf_soffice(path: str) -> Path | None:
                 f"-env:UserInstallation={user_install}",
                 path,
             ],
-            check=True,
-            capture_output=True,
             timeout=180,
         )
+        if proc.returncode != 0:
+            logger.warning(
+                "LibreOffice 退出码 %s: %s", proc.returncode, stderr.strip()[:300]
+            )
+            return None
         converted = out_dir / f"{Path(path).stem}.pdf"
         if not converted.is_file():
             return None

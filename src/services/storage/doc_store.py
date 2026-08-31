@@ -1,5 +1,7 @@
 """SQLite 文档元数据存储。"""
 
+from __future__ import annotations
+
 import logging
 import sqlite3
 from datetime import datetime, timezone
@@ -8,6 +10,16 @@ from pathlib import Path
 from src.services.storage.catalog_store import DEFAULT_COURSE_ID, DEFAULT_COURSE_NAME
 
 logger = logging.getLogger(__name__)
+
+
+_TYPE_LABELS = {
+    ".md": ("markdown", "Markdown 笔记"),
+    ".txt": ("text", "纯文本"),
+    ".pdf": ("pdf", "PDF 讲义"),
+    ".doc": ("word", "Word 文档"),
+    ".docx": ("word", "Word 文档"),
+    ".pptx": ("ppt", "PPT 讲义"),
+}
 
 
 class SQLiteDocStore:
@@ -34,7 +46,22 @@ class SQLiteDocStore:
                 course TEXT NOT NULL DEFAULT '{DEFAULT_COURSE_NAME}',
                 course_id TEXT NOT NULL DEFAULT '{DEFAULT_COURSE_ID}',
                 created_at TEXT NOT NULL,
-                file_mtime REAL
+                file_mtime REAL,
+                content_hash TEXT NOT NULL DEFAULT '',
+                logical_name TEXT NOT NULL DEFAULT '',
+                version_number INTEGER NOT NULL DEFAULT 1,
+                previous_doc_id INTEGER,
+                superseded_by INTEGER,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT,
+                source_version TEXT NOT NULL DEFAULT '',
+                effective_from TEXT NOT NULL DEFAULT '0001-01-01',
+                effective_to TEXT NOT NULL DEFAULT '9999-12-31',
+                authority_level INTEGER NOT NULL DEFAULT 30,
+                authority_label TEXT NOT NULL DEFAULT '教学材料',
+                applicability_scope TEXT NOT NULL DEFAULT 'all',
+                metadata_confidence REAL NOT NULL DEFAULT 0,
+                metadata_source TEXT NOT NULL DEFAULT 'auto'
             )
             """
         )
@@ -60,12 +87,35 @@ class SQLiteDocStore:
                 "WHERE course IS NULL OR course = '' OR course = '信号与系统'",
                 (DEFAULT_COURSE_NAME,),
             )
+        additions = {
+            "content_hash": "TEXT NOT NULL DEFAULT ''",
+            "logical_name": "TEXT NOT NULL DEFAULT ''",
+            "version_number": "INTEGER NOT NULL DEFAULT 1",
+            "previous_doc_id": "INTEGER",
+            "superseded_by": "INTEGER",
+            "is_active": "INTEGER NOT NULL DEFAULT 1",
+            "updated_at": "TEXT",
+            "source_version": "TEXT NOT NULL DEFAULT ''",
+            "effective_from": "TEXT NOT NULL DEFAULT '0001-01-01'",
+            "effective_to": "TEXT NOT NULL DEFAULT '9999-12-31'",
+            "authority_level": "INTEGER NOT NULL DEFAULT 30",
+            "authority_label": "TEXT NOT NULL DEFAULT '教学材料'",
+            "applicability_scope": "TEXT NOT NULL DEFAULT 'all'",
+            "metadata_confidence": "REAL NOT NULL DEFAULT 0",
+            "metadata_source": "TEXT NOT NULL DEFAULT 'auto'",
+        }
+        for name, definition in additions.items():
+            if name not in cols:
+                self._conn.execute(f"ALTER TABLE documents ADD COLUMN {name} {definition}")
         self._conn.commit()
 
     def _cols(self) -> str:
         return (
             "id, filename, file_path, status, chunk_count, course, course_id, "
-            "created_at, file_mtime"
+            "created_at, file_mtime, content_hash, logical_name, version_number, "
+            "previous_doc_id, superseded_by, is_active, updated_at"
+            ", source_version, effective_from, effective_to, authority_level, "
+            "authority_label, applicability_scope, metadata_confidence, metadata_source"
         )
 
     def create(
@@ -74,13 +124,28 @@ class SQLiteDocStore:
         file_path: str,
         course: str = DEFAULT_COURSE_NAME,
         course_id: str = DEFAULT_COURSE_ID,
+        *,
+        content_hash: str = "",
+        logical_name: str = "",
+        is_active: bool = True,
     ) -> int:
         now = datetime.now(timezone.utc).isoformat()
         cur = self._conn.execute(
             "INSERT INTO documents "
-            "(filename, file_path, status, chunk_count, course, course_id, created_at) "
-            "VALUES (?, ?, 'pending', 0, ?, ?, ?)",
-            (filename, file_path, course, course_id, now),
+            "(filename, file_path, status, chunk_count, course, course_id, created_at, "
+            "content_hash, logical_name, is_active, updated_at) "
+            "VALUES (?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                filename,
+                file_path,
+                course,
+                course_id,
+                now,
+                content_hash,
+                logical_name,
+                int(is_active),
+                now,
+            ),
         )
         self._conn.commit()
         return int(cur.lastrowid)
@@ -97,13 +162,13 @@ class SQLiteDocStore:
     ) -> None:
         if chunk_count is None:
             self._conn.execute(
-                "UPDATE documents SET status = ? WHERE id = ?",
-                (status, doc_id),
+                "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
+                (status, datetime.now(timezone.utc).isoformat(), doc_id),
             )
         else:
             self._conn.execute(
-                "UPDATE documents SET status = ?, chunk_count = ? WHERE id = ?",
-                (status, chunk_count, doc_id),
+                "UPDATE documents SET status = ?, chunk_count = ?, updated_at = ? WHERE id = ?",
+                (status, chunk_count, datetime.now(timezone.utc).isoformat(), doc_id),
             )
         self._conn.commit()
 
@@ -114,18 +179,34 @@ class SQLiteDocStore:
         )
         self._conn.commit()
 
-    def list(self, course_id: str | None = None) -> list[dict]:
+    def list(
+        self, course_id: str | None = None, *, include_history: bool = False
+    ) -> list[dict]:
+        active_clause = "" if include_history else " AND is_active = 1"
         if course_id:
             rows = self._conn.execute(
                 f"SELECT {self._cols()} FROM documents "
-                "WHERE course_id = ? ORDER BY id DESC",
+                f"WHERE course_id = ?{active_clause} ORDER BY id DESC",
                 (course_id,),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                f"SELECT {self._cols()} FROM documents ORDER BY id DESC"
+                f"SELECT {self._cols()} FROM documents "
+                f"WHERE 1 = 1{active_clause} ORDER BY id DESC"
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def group_by_type(self, course_id: str | None = None) -> list[dict]:
+        """按文件类型对文档大致分类，返回分组列表（每项含 type/label/documents）。"""
+        groups: dict[str, dict] = {}
+        for doc in self.list(course_id=course_id):
+            ext = Path(doc["filename"]).suffix.lower()
+            type_key, label = _TYPE_LABELS.get(ext, ("other", "其他"))
+            group = groups.setdefault(
+                type_key, {"type": type_key, "label": label, "documents": []}
+            )
+            group["documents"].append(doc)
+        return sorted(groups.values(), key=lambda g: g["type"])
 
     def delete(self, doc_id: int) -> None:
         self._conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
@@ -138,6 +219,80 @@ class SQLiteDocStore:
             (file_path,),
         ).fetchone()
         return dict(row) if row else None
+
+    def find_active_by_hash(self, content_hash: str, course_id: str) -> dict | None:
+        if not content_hash:
+            return None
+        row = self._conn.execute(
+            f"SELECT {self._cols()} FROM documents "
+            "WHERE content_hash = ? AND course_id = ? AND is_active = 1 "
+            "ORDER BY id DESC LIMIT 1",
+            (content_hash, course_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def find_active_by_logical_name(
+        self, logical_name: str, course_id: str
+    ) -> list[dict]:
+        if not logical_name:
+            return []
+        rows = self._conn.execute(
+            f"SELECT {self._cols()} FROM documents "
+            "WHERE logical_name = ? AND course_id = ? AND is_active = 1 "
+            "ORDER BY id DESC",
+            (logical_name, course_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_identity(
+        self, doc_id: int, *, content_hash: str, logical_name: str
+    ) -> None:
+        self._conn.execute(
+            "UPDATE documents SET content_hash = ?, logical_name = ?, updated_at = ? "
+            "WHERE id = ?",
+            (content_hash, logical_name, datetime.now(timezone.utc).isoformat(), doc_id),
+        )
+        self._conn.commit()
+
+    def promote_version(self, old_doc_id: int, new_doc_id: int) -> None:
+        """将已成功入库的新记录设为当前版本，旧记录仅保留历史元数据。"""
+        now = datetime.now(timezone.utc).isoformat()
+        old = self.get(old_doc_id)
+        if old is None:
+            raise ValueError(f"旧文档不存在: {old_doc_id}")
+        version = int(old.get("version_number") or 1) + 1
+        self._conn.execute(
+            "UPDATE documents SET is_active = 0, status = 'superseded', "
+            "superseded_by = ?, updated_at = ? WHERE id = ?",
+            (new_doc_id, now, old_doc_id),
+        )
+        self._conn.execute(
+            "UPDATE documents SET is_active = 1, status = 'done', version_number = ?, "
+            "previous_doc_id = ?, updated_at = ? WHERE id = ?",
+            (version, old_doc_id, now, new_doc_id),
+        )
+        self._conn.commit()
+
+    def update_evidence_metadata(self, doc_id: int, metadata: dict) -> None:
+        """写入可过滤、可排序、可解释的证据元数据。"""
+        fields = (
+            "source_version",
+            "effective_from",
+            "effective_to",
+            "authority_level",
+            "authority_label",
+            "applicability_scope",
+            "metadata_confidence",
+            "metadata_source",
+        )
+        values = [metadata.get(name) for name in fields]
+        self._conn.execute(
+            "UPDATE documents SET "
+            + ", ".join(f"{name} = ?" for name in fields)
+            + ", updated_at = ? WHERE id = ?",
+            (*values, datetime.now(timezone.utc).isoformat(), doc_id),
+        )
+        self._conn.commit()
 
     def update_file_mtime(self, doc_id: int, mtime: float) -> None:
         self._conn.execute(

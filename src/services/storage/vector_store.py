@@ -1,6 +1,7 @@
 """ChromaDB 向量存储。检索按 course_id 过滤（docs/04 4.2）。"""
 
 import logging
+import re
 from pathlib import Path
 
 import chromadb
@@ -9,6 +10,28 @@ from chromadb.config import Settings
 from src.exceptions import AppException, ServiceUnavailableException
 
 logger = logging.getLogger(__name__)
+
+_PAGE_PLACEHOLDER = re.compile(r"^第\s*\d+\s*页$")
+_EVIDENCE_DEFAULTS = {
+    "source_version": "",
+    "effective_from": "0001-01-01",
+    "effective_to": "9999-12-31",
+    "authority_level": 30,
+    "authority_label": "教学材料",
+    "applicability_scope": "all",
+    "metadata_confidence": 0.0,
+    "metadata_source": "auto",
+    "effective_from_sort": 10101,
+    "effective_to_sort": 99991231,
+}
+
+
+def _date_sort_value(value: str | None, default: int) -> int:
+    """Chroma 的范围比较只接受数值；日期字段仍以 ISO 字符串对外呈现。"""
+    digits = "".join(char for char in str(value or "") if char.isdigit())
+    if len(digits) == 8:
+        return int(digits)
+    return default
 
 
 class ChromaVectorStore:
@@ -26,6 +49,36 @@ class ChromaVectorStore:
             name=collection_name,
             metadata={"hnsw:space": "cosine"},
         )
+        self._ensure_active_metadata()
+
+    def _ensure_active_metadata(self) -> None:
+        """为旧库补齐激活标记，升级后继续让既有资料可被检索。"""
+        if self._collection.count() == 0:
+            return
+        try:
+            rows = self._collection.get(include=["metadatas"])
+            ids = rows.get("ids") or []
+            metas = rows.get("metadatas") or []
+            changed_ids: list[str] = []
+            changed_metas: list[dict] = []
+            for index, chunk_id in enumerate(ids):
+                meta = dict(metas[index] or {}) if index < len(metas) else {}
+                changed = False
+                if "is_active" not in meta:
+                    meta["is_active"] = True
+                    changed = True
+                for name, value in _EVIDENCE_DEFAULTS.items():
+                    if name not in meta:
+                        meta[name] = value
+                        changed = True
+                if changed:
+                    changed_ids.append(chunk_id)
+                    changed_metas.append(meta)
+            if changed_ids:
+                self._collection.update(ids=changed_ids, metadatas=changed_metas)
+                logger.info("为 %d 个既有向量补齐 is_active 标记", len(changed_ids))
+        except Exception as e:
+            logger.warning("补齐向量激活标记失败，将在下次启动重试: %s", e)
 
     def stored_embedding_dim(self) -> int | None:
         """已有向量维度；空集合或无法读取时返回 None。"""
@@ -108,6 +161,25 @@ class ChromaVectorStore:
                 "college_id": chunk.get("college_id", ""),
                 "page": chunk.get("page") if chunk.get("page") is not None else -1,
                 "chapter": str(chunk.get("chapter") or ""),
+                "block_type": str(chunk.get("block_type") or ""),
+                "section_path": str(chunk.get("section_path") or ""),
+                "table_headers": str(chunk.get("table_headers") or ""),
+                "context": str(chunk.get("context") or ""),
+                "is_active": bool(chunk.get("is_active", True)),
+                "source_version": str(chunk.get("source_version") or ""),
+                "effective_from": str(chunk.get("effective_from") or "0001-01-01"),
+                "effective_to": str(chunk.get("effective_to") or "9999-12-31"),
+                "authority_level": int(chunk.get("authority_level") or 30),
+                "authority_label": str(chunk.get("authority_label") or "教学材料"),
+                "applicability_scope": str(chunk.get("applicability_scope") or "all"),
+                "metadata_confidence": float(chunk.get("metadata_confidence") or 0.0),
+                "metadata_source": str(chunk.get("metadata_source") or "auto"),
+                "effective_from_sort": _date_sort_value(
+                    chunk.get("effective_from"), 10101
+                ),
+                "effective_to_sort": _date_sort_value(
+                    chunk.get("effective_to"), 99991231
+                ),
             })
 
         def _do_upsert() -> None:
@@ -142,6 +214,9 @@ class ChromaVectorStore:
         top_k: int = 5,
         *,
         course_id: str | None = None,
+        block_type: str | None = None,
+        scenario: str | None = None,
+        as_of: str | None = None,
     ) -> list[dict]:
         if not course_id:
             raise ValueError("search 必须提供 course_id，禁止全库检索")
@@ -149,10 +224,13 @@ class ChromaVectorStore:
             return []
 
         try:
+            where = self._evidence_where(
+                course_id, block_type=block_type, scenario=scenario, as_of=as_of
+            )
             results = self._collection.query(
                 query_embeddings=[query_vec],
                 n_results=min(top_k, self._collection.count()),
-                where={"course_id": course_id},
+                where=where,
                 include=["documents", "metadatas", "distances"],
             )
         except Exception as e:
@@ -175,27 +253,192 @@ class ChromaVectorStore:
             meta = results["metadatas"][0][i] or {}
             distance = results["distances"][0][i]
             score = max(0.0, 1.0 - distance)
-            page = meta.get("page")
-            if page == -1:
-                page = None
-            hits.append({
-                "id": chunk_id,
-                "text": results["documents"][0][i],
-                "score": score,
-                "metadata": {
-                    "doc_id": meta.get("doc_id", ""),
-                    "source_file": meta.get("source_file", ""),
-                    "chunk_index": meta.get("chunk_index", 0),
-                    "course": meta.get("course", ""),
-                    "course_id": meta.get("course_id", ""),
-                    "college_id": meta.get("college_id", ""),
-                    "page": page,
-                    "chapter": meta.get("chapter") or "",
-                },
-            })
+            hits.append(
+                self._normalize_hit(
+                    chunk_id,
+                    results["documents"][0][i],
+                    meta,
+                    score=score,
+                )
+            )
 
         hits.sort(key=lambda x: x["score"], reverse=True)
         return hits
+
+    @staticmethod
+    def _normalize_hit(
+        chunk_id: str,
+        text: str,
+        meta: dict,
+        score: float = 0.0,
+    ) -> dict:
+        """统一的 chunk 命中结构（含结构化解析 metadata）。"""
+        page = meta.get("page")
+        if page == -1:
+            page = None
+        return {
+            "id": chunk_id,
+            "text": text,
+            "score": score,
+            "metadata": {
+                "doc_id": meta.get("doc_id", ""),
+                "source_file": meta.get("source_file", ""),
+                "chunk_index": meta.get("chunk_index", 0),
+                "course": meta.get("course", ""),
+                "course_id": meta.get("course_id", ""),
+                "college_id": meta.get("college_id", ""),
+                "page": page,
+                "chapter": meta.get("chapter") or "",
+                "block_type": meta.get("block_type") or "",
+                "section_path": meta.get("section_path") or "",
+                "table_headers": meta.get("table_headers") or "",
+                "context": meta.get("context") or "",
+                "source_version": meta.get("source_version") or "",
+                "effective_from": meta.get("effective_from") or "0001-01-01",
+                "effective_to": meta.get("effective_to") or "9999-12-31",
+                "authority_level": int(meta.get("authority_level") or 30),
+                "authority_label": meta.get("authority_label") or "教学材料",
+                "applicability_scope": meta.get("applicability_scope") or "all",
+                "metadata_confidence": float(meta.get("metadata_confidence") or 0.0),
+                "metadata_source": meta.get("metadata_source") or "auto",
+            },
+        }
+
+    @staticmethod
+    def _evidence_where(
+        course_id: str,
+        *,
+        block_type: str | None = None,
+        scenario: str | None = None,
+        as_of: str | None = None,
+    ) -> dict:
+        clauses: list[dict] = [{"course_id": course_id}, {"is_active": True}]
+        if block_type:
+            clauses.append({"block_type": block_type})
+        if scenario and scenario != "all":
+            clauses.append(
+                {
+                    "$or": [
+                        {"applicability_scope": scenario},
+                        {"applicability_scope": "all"},
+                    ]
+                }
+            )
+        if as_of:
+            target = _date_sort_value(as_of, 0)
+            clauses.append({"effective_from_sort": {"$lte": target}})
+            clauses.append({"effective_to_sort": {"$gte": target}})
+        return clauses[0] if len(clauses) == 1 else {"$and": clauses}
+
+    def get_chunks(
+        self,
+        *,
+        course_id: str,
+        doc_id: str | None = None,
+        source_file: str | None = None,
+        page: int | None = None,
+        block_type: str | None = None,
+        scenario: str | None = None,
+        as_of: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """按条件取 chunk（course_id 强制；doc_id/source_file/page/block_type 可选过滤）。
+
+        供 Agent 工具（read_page / extract_table / analyze_chart）读取结构化切片。
+        """
+        if not course_id:
+            raise ValueError("get_chunks 必须提供 course_id，禁止全库读取")
+        clauses: list[dict] = [{"course_id": course_id}, {"is_active": True}]
+        if doc_id:
+            clauses.append({"doc_id": str(doc_id)})
+        if source_file:
+            clauses.append({"source_file": source_file})
+        if page is not None:
+            clauses.append({"page": int(page)})
+        if block_type:
+            clauses.append({"block_type": block_type})
+        if scenario and scenario != "all":
+            clauses.append(
+                {
+                    "$or": [
+                        {"applicability_scope": scenario},
+                        {"applicability_scope": "all"},
+                    ]
+                }
+            )
+        if as_of:
+            clauses.extend(
+                [
+                    {"effective_from_sort": {"$lte": _date_sort_value(as_of, 0)}},
+                    {"effective_to_sort": {"$gte": _date_sort_value(as_of, 0)}},
+                ]
+            )
+        where: dict = clauses[0] if len(clauses) == 1 else {"$and": clauses}
+        if self._collection.count() == 0:
+            return []
+        try:
+            results = self._collection.get(
+                where=where,
+                include=["documents", "metadatas"],
+                limit=limit,
+            )
+        except Exception as e:
+            logger.error("按条件读取向量失败: %s", e)
+            raise ServiceUnavailableException(
+                "向量读取失败", detail=str(e)
+            ) from e
+
+        ids = results.get("ids") or []
+        documents = results.get("documents") or []
+        metadatas = results.get("metadatas") or []
+        hits = [
+            self._normalize_hit(
+                ids[i],
+                documents[i] if i < len(documents) else "",
+                (metadatas[i] if i < len(metadatas) else None) or {},
+            )
+            for i in range(len(ids))
+        ]
+        hits.sort(key=lambda h: int((h.get("metadata") or {}).get("chunk_index") or 0))
+        return hits
+
+    def set_active_by_doc_id(self, doc_id: str, is_active: bool) -> None:
+        """切换一个文档全部切片的检索可见性。"""
+        rows = self._collection.get(
+            where={"doc_id": str(doc_id)}, include=["metadatas"]
+        )
+        ids = rows.get("ids") or []
+        metas = rows.get("metadatas") or []
+        if not ids:
+            return
+        updated = []
+        for index, _chunk_id in enumerate(ids):
+            meta = dict(metas[index] or {}) if index < len(metas) else {}
+            meta["is_active"] = bool(is_active)
+            updated.append(meta)
+        self._collection.update(ids=ids, metadatas=updated)
+
+    def set_evidence_metadata_by_doc_id(self, doc_id: str, metadata: dict) -> None:
+        """同步文档级证据元数据到全部向量切片，无需重新向量化。"""
+        rows = self._collection.get(
+            where={"doc_id": str(doc_id)}, include=["metadatas"]
+        )
+        ids = rows.get("ids") or []
+        metas = rows.get("metadatas") or []
+        if not ids:
+            return
+        updated = []
+        for index, _chunk_id in enumerate(ids):
+            meta = dict(metas[index] or {}) if index < len(metas) else {}
+            meta.update({key: value for key, value in metadata.items() if value is not None})
+            meta["effective_from_sort"] = _date_sort_value(
+                meta.get("effective_from"), 10101
+            )
+            meta["effective_to_sort"] = _date_sort_value(
+                meta.get("effective_to"), 99991231
+            )
+            updated.append(meta)
+        self._collection.update(ids=ids, metadatas=updated)
 
     def rebind_course_id(
         self,
@@ -251,7 +494,7 @@ class ChromaVectorStore:
             return []
         try:
             results = self._collection.get(
-                where={"course_id": course_id},
+                where={"$and": [{"course_id": course_id}, {"is_active": True}]},
                 include=["documents", "metadatas"],
             )
         except Exception as e:
@@ -266,24 +509,13 @@ class ChromaVectorStore:
         hits: list[dict] = []
         for i, chunk_id in enumerate(ids):
             meta = (metadatas[i] if i < len(metadatas) else None) or {}
-            page = meta.get("page")
-            if page == -1:
-                page = None
-            hits.append({
-                "id": chunk_id,
-                "text": documents[i] if i < len(documents) else "",
-                "score": 0.0,
-                "metadata": {
-                    "doc_id": meta.get("doc_id", ""),
-                    "source_file": meta.get("source_file", ""),
-                    "chunk_index": meta.get("chunk_index", 0),
-                    "course": meta.get("course", ""),
-                    "course_id": meta.get("course_id", ""),
-                    "college_id": meta.get("college_id", ""),
-                    "page": page,
-                    "chapter": meta.get("chapter") or "",
-                },
-            })
+            hits.append(
+                self._normalize_hit(
+                    chunk_id,
+                    documents[i] if i < len(documents) else "",
+                    meta,
+                )
+            )
         return hits
 
     def list_chapters(self, course_id: str) -> list[str]:
@@ -297,6 +529,30 @@ class ChromaVectorStore:
             }
         )
 
+    def group_by_chapter(self, course_id: str) -> list[dict]:
+        """按章节（内容）聚合本课 chunk，返回每个章节的来源文件与 chunk 数。"""
+        corpus = self.get_by_course_id(course_id)
+        groups: dict[str, dict] = {}
+        for h in corpus:
+            meta = h.get("metadata") or {}
+            chapter = (meta.get("chapter") or "").strip()
+            if not chapter or _PAGE_PLACEHOLDER.match(chapter):
+                continue
+            group = groups.setdefault(
+                chapter,
+                {"chapter": chapter, "source_files": set(), "chunk_count": 0},
+            )
+            group["source_files"].add(meta.get("source_file") or "未知")
+            group["chunk_count"] += 1
+        return [
+            {
+                "chapter": group["chapter"],
+                "chunk_count": group["chunk_count"],
+                "source_files": sorted(group["source_files"]),
+            }
+            for group in sorted(groups.values(), key=lambda g: g["chapter"])
+        ]
+
     @staticmethod
     def _sort_chapter_hits(hits: list[dict]) -> list[dict]:
         def _key(h: dict):
@@ -308,7 +564,14 @@ class ChromaVectorStore:
 
         return sorted(hits, key=_key)
 
-    def get_by_chapter(self, course_id: str, chapter: str) -> list[dict]:
+    def get_by_chapter(
+        self,
+        course_id: str,
+        chapter: str,
+        *,
+        scenario: str | None = None,
+        as_of: str | None = None,
+    ) -> list[dict]:
         """按课聚合章节；先精确，再 query⊂chapter 模糊（禁止 chapter⊂query，避免第9章误匹配第99章）。"""
         if not course_id or not course_id.strip():
             raise ValueError("get_by_chapter 必须提供 course_id")
@@ -316,6 +579,21 @@ class ChromaVectorStore:
         if not key:
             return []
         corpus = self.get_by_course_id(course_id)
+        if scenario and scenario != "all":
+            corpus = [
+                hit
+                for hit in corpus
+                if (hit.get("metadata") or {}).get("applicability_scope")
+                in ("all", scenario)
+            ]
+        if as_of:
+            corpus = [
+                hit
+                for hit in corpus
+                if str((hit.get("metadata") or {}).get("effective_from") or "0001-01-01")
+                <= as_of
+                <= str((hit.get("metadata") or {}).get("effective_to") or "9999-12-31")
+            ]
         exact = [
             h
             for h in corpus
